@@ -72,6 +72,10 @@ class Launcher:
         self.font_title = _font(28, bold=True)
         self.font_status = _font(19, bold=True)
         try:
+            self.screen_long = max(pygame.display.get_desktop_sizes()[0])
+        except (AttributeError, IndexError, pygame.error):
+            self.screen_long = 1920
+        try:
             while True:
                 session, adb = self._wait_for_phone()
                 if session is None:
@@ -82,7 +86,8 @@ class Launcher:
                           audio=self.options["audio"],
                           screen_off=self.options["screen_off"],
                           pc_mode_apps=self.options["pc_mode_apps"],
-                          mode=self.options.get("mode", "control"))
+                          mode=self.options.get("mode", "control"),
+                          quality=self.options.get("quality", "balanced"))
                 try:
                     app.run()
                 finally:
@@ -90,6 +95,10 @@ class Launcher:
                 self.options["mode"] = "watch" if app.watch else "control"
                 if app.quit_requested:
                     return 0
+                if app.new_quality:
+                    self.set_quality(app.new_quality)
+                    self.message = "Качество: %s" % settings_mod.PRESET_NAMES[app.new_quality]
+                    continue
                 self.message = "Связь с телефоном потеряна."
                 print("phonecast: connection lost (%s)" % (app.decoder.error or "video stream ended"),
                       file=sys.stderr)
@@ -110,6 +119,7 @@ class Launcher:
         self._result = None
         self.status, self.details = "Ищу телефон…", []
         self._mode_buttons = []
+        self._quality_buttons = []
         self._stop = False
         threading.Thread(target=self._connect_loop, daemon=True).start()
         clock = pygame.time.Clock()
@@ -124,6 +134,9 @@ class Launcher:
                     for rect, mode in self._mode_buttons:
                         if rect.collidepoint(ev.pos):
                             self.set_mode(mode)
+                    for rect, quality in self._quality_buttons:
+                        if rect.collidepoint(ev.pos):
+                            self.set_quality(quality)
             with self._lock:
                 result = self._result
             if result:
@@ -155,7 +168,25 @@ class Launcher:
             screen.blit(img, img.get_rect(center=rect.center))
             self._mode_buttons.append((rect, mode))
             x += bw + gap
-        y += 58
+        y += 48
+        # Quality row
+        self._quality_buttons = []
+        qw = 150
+        cap = self.font.render("Качество:", True, (200, 200, 210))
+        total = cap.get_width() + 12 + 3 * qw + 2 * 10
+        x = w // 2 - total // 2
+        screen.blit(cap, (x, y + 8))
+        x += cap.get_width() + 12
+        for quality in settings_mod.PRESET_ORDER:
+            rect = pygame.Rect(x, y, qw, 32)
+            chosen = self.options.get("quality") == quality
+            color = (40, 110, 200) if chosen else ((70, 74, 88) if rect.collidepoint(mouse) else (50, 54, 66))
+            pygame.draw.rect(screen, color, rect, border_radius=8)
+            img = self.font.render(settings_mod.PRESET_NAMES[quality], True, (240, 240, 245))
+            screen.blit(img, img.get_rect(center=rect.center))
+            self._quality_buttons.append((rect, quality))
+            x += qw + 10
+        y += 52
         if self.message:
             img = self.font.render(self.message, True, (255, 200, 120))
             screen.blit(img, img.get_rect(midtop=(w // 2, y)))
@@ -176,6 +207,12 @@ class Launcher:
         self.options["mode"] = mode
         saved = settings_mod.load()
         saved["mode"] = mode
+        settings_mod.save(saved)
+
+    def set_quality(self, quality):
+        self.options["quality"] = quality
+        saved = settings_mod.load()
+        saved["quality"] = quality
         settings_mod.save(saved)
 
     def _set_status(self, status, details=()):
@@ -213,9 +250,9 @@ class Launcher:
                 name = next((d[2].replace("model:", "").split()[0] for d in ready
                              if d[0] == adb.serial and "model:" in d[2]), adb.serial)
                 self._set_status("Подключаюсь к %s" % name.replace("_", " "))
-                session = Session(adb, max_size=self.options["max_size"],
-                                  bit_rate=parse_bit_rate(self.options["bit_rate"]),
-                                  max_fps=self.options["max_fps"], audio=self.options["audio"],
+                max_size, bit_rate, max_fps = settings_mod.video_params(self.options, self.screen_long)
+                session = Session(adb, max_size=max_size, bit_rate=parse_bit_rate(bit_rate),
+                                  max_fps=max_fps, audio=self.options["audio"],
                                   server_file=self.server_file, stay_awake=self.stay_awake,
                                   verbose=self.verbose)
                 try:

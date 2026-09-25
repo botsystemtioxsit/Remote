@@ -121,19 +121,31 @@ class VideoDecoder(threading.Thread):
 def find_audio_player():
     """Command that plays raw s16le 48 kHz stereo PCM from stdin, or None."""
     if shutil.which("pacat"):  # PulseAudio / PipeWire-pulse
+        # 80 ms: 40 ms ran dry regularly on virtualized audio (Chromebooks)
         return ["pacat", "--playback", "--raw", "--format=s16le", "--rate=48000",
-                "--channels=2", "--latency-msec=40", "--client-name=phonecast"]
+                "--channels=2", "--latency-msec=80", "--client-name=phonecast"]
     if shutil.which("pw-cat"):
         return ["pw-cat", "--playback", "--raw", "--format=s16", "--rate=48000",
-                "--channels=2", "--latency=40ms", "-"]
+                "--channels=2", "--latency=80ms", "-"]
     if shutil.which("aplay"):
         return ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "48000", "-c", "2",
-                "--buffer-time=60000"]
+                "--buffer-time=80000"]
     return None
 
 
+AUDIO_MAX_LAG_US = 200_000     # sound this far behind: skip ahead...
+AUDIO_TARGET_LAG_US = 60_000   # ...until it is back to about this
+PIPE_BYTES = 16384             # ~85 ms of s16 stereo 48 kHz (the default pipe holds 340 ms)
+F_SETPIPE_SZ = 1031
+
+
 class AudioPlayer(threading.Thread):
-    """Plays the phone audio: Opus (decoded here) or raw PCM, 48 kHz stereo."""
+    """Plays the phone audio: Opus (decoded here) or raw PCM, 48 kHz stereo.
+
+    The delay is kept bounded: each packet carries its capture time, and when
+    the sound falls behind (the phone's clock runs a bit faster than the sound
+    card's, the player hiccuped...) stale audio is skipped, like the video.
+    """
 
     def __init__(self, sock, command, codec="opus"):
         super().__init__(daemon=True, name="audio")
@@ -142,6 +154,8 @@ class AudioPlayer(threading.Thread):
         self.codec = codec
         self.muted = False
         self._proc = None
+        self.skipped = 0       # packets dropped to catch up
+        self.lag_ms = 0
 
     def run(self):
         try:
@@ -151,13 +165,22 @@ class AudioPlayer(threading.Thread):
             print("phonecast: cannot start audio player: %s" % e, file=sys.stderr)
             self._drain()
             return
+        try:
+            import fcntl
+            fcntl.fcntl(self._proc.stdin.fileno(), F_SETPIPE_SZ, PIPE_BYTES)
+        except (ImportError, OSError):
+            pass
         silence = b""
+        base = None
+        base_t = 0.0
+        catching_up = False
         decoder = None
         resampler = av.AudioResampler(format="s16", layout="stereo", rate=48000)
         try:
             while True:
-                _pts, is_config, _key, payload = read_packet(self.sock)
+                pts, is_config, _key, payload = read_packet(self.sock)
                 if is_config:
+                    base = None
                     if self.codec == "opus":
                         # OpusHead: the decoder's extradata
                         decoder = av.CodecContext.create("opus", "r")
@@ -174,6 +197,19 @@ class AudioPlayer(threading.Thread):
                                        for f in frames for r in resampler.resample(f))
                     if not payload:
                         continue
+                # Bounded delay (same idea as the video decoder).
+                now = time.monotonic()
+                d = now * 1e6 - pts
+                if base is None:
+                    base, base_t = d, now
+                base = min(base + (now - base_t) * 1e6 * 0.02, d)
+                base_t = now
+                lag = d - base
+                self.lag_ms = int(lag / 1000)
+                if catching_up or lag > AUDIO_MAX_LAG_US:
+                    catching_up = lag > AUDIO_TARGET_LAG_US
+                    self.skipped += 1
+                    continue
                 if self.muted:
                     if len(silence) != len(payload):
                         silence = bytes(len(payload))

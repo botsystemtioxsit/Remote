@@ -5,13 +5,25 @@ import os
 
 # Bumped when defaults change in a way that must replace values saved by an
 # older version (quality settings that older versions lowered automatically).
-VERSION = 2
+VERSION = 3
 QUALITY_KEYS = ("max_size", "bit_rate", "max_fps")
+
+# Quality presets: (larger side of the video in px, bit rate, fps).
+# "screen" = as many pixels as the computer screen has (never more than the phone).
+PRESETS = {
+    "fast": (1024, "4M", 60),
+    "balanced": (1600, "10M", 60),
+    "high": ("screen", "16M", 60),
+}
+PRESET_NAMES = {"fast": "Быстрое", "balanced": "Баланс", "high": "Высокое", "custom": "Своё"}
+PRESET_ORDER = ["fast", "balanced", "high"]
 
 DEFAULTS = {
     "version": VERSION,
-    "max_size": 1280,        # larger side of the video, px (0 = phone resolution)
-    "bit_rate": "6M",
+    # fast / balanced / high, or "custom" to use max_size, bit_rate and max_fps below
+    "quality": "balanced",
+    "max_size": 1600,        # larger side of the video, px (0 = phone resolution)
+    "bit_rate": "10M",
     "max_fps": 60,
     "audio": True,
     "fullscreen": False,
@@ -38,7 +50,8 @@ def load():
         with open(settings_path(), encoding="utf-8") as f:
             data = json.load(f)
         if data.get("version", 1) < VERSION:
-            for key in QUALITY_KEYS + ("version",):
+            # Quality values of older versions were low defaults, not choices.
+            for key in QUALITY_KEYS + ("version", "quality"):
                 data.pop(key, None)
             settings.update({k: v for k, v in data.items() if k in DEFAULTS})
             save(settings)
@@ -62,3 +75,16 @@ def save(settings):
         os.replace(tmp, path)
     except OSError as e:
         print("phonecast: cannot save settings: %s" % e)
+
+
+def video_params(settings, screen_long_side):
+    """(max_size, bit_rate, max_fps) for the chosen quality."""
+    preset = PRESETS.get(settings.get("quality"))
+    if preset is None:  # "custom"
+        return settings["max_size"], settings["bit_rate"], settings["max_fps"]
+    size, bit_rate, fps = preset
+    if size == "screen":
+        size = max(1600, int(screen_long_side or 1920))
+    else:
+        size = min(size, max(1024, int(screen_long_side or size)))
+    return size, bit_rate, fps

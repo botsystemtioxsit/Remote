@@ -59,7 +59,8 @@ def read_pc_clipboard():
 
 class App:
     def __init__(self, session, adb, profiles, profiles_dir, start_profile=None,
-                 fullscreen=False, audio=True, screen_off=False, pc_mode_apps=(), mode="control"):
+                 fullscreen=False, audio=True, screen_off=False, pc_mode_apps=(), mode="control",
+                 quality="balanced"):
         self.session = session
         self.adb = adb
         self.profiles = profiles
@@ -116,6 +117,8 @@ class App:
         self._bar = []                # [(rect, action)] of the top bar shown on hover
         # "watch": picture and sound only, nothing is sent to the phone
         self.watch = mode == "watch"
+        self.quality = quality
+        self.new_quality = None       # set to reconnect with another quality preset
         self.stats = {"decoded": 0, "shown": 0, "lag": 0}
         self._shown = 0
 
@@ -322,10 +325,20 @@ class App:
                 self._set_mode(self._fit_window_size(*native))
             else:
                 self._layout()
+        # Convert straight to the size it is shown at, with smooth (bilinear)
+        # filtering: no blocky pixels when enlarged, and about as cheap as
+        # converting at native size and scaling with pygame (nearest pixel).
+        size = native
+        if self.view.w and abs(self.view.w - native[0]) > 1:
+            size = self.view.size
+            rgb = frame.reformat(width=size[0], height=size[1], format="rgb24",
+                                 interpolation="FAST_BILINEAR").to_ndarray()
+        else:
+            rgb = frame.to_ndarray(format="rgb24")
         # Rows may be padded in memory (e.g. width 1080), pygame needs them packed:
         # ascontiguousarray copies only in that case.
-        rgb = numpy.ascontiguousarray(frame.to_ndarray(format="rgb24"))
-        self.frame_surface = pygame.image.frombuffer(rgb, native, "RGB")
+        rgb = numpy.ascontiguousarray(rgb)
+        self.frame_surface = pygame.image.frombuffer(rgb, size, "RGB")
         self._frame_buffer = rgb  # keep the pixels alive as long as the surface
         self._scaled = None
         return True
@@ -454,6 +467,8 @@ class App:
             buttons = [("⚙ Настроить управление (F3)", self.toggle_editor)] if not self.watch else []
             buttons.append(("Включить управление" if self.watch else "Только трансляция",
                             lambda: self.set_watch(not self.watch)))
+            buttons.append(("Качество: %s ⇄" % settings_mod.PRESET_NAMES.get(self.quality, self.quality),
+                            self.next_quality))
             for text, action in buttons:
                 w = self.font_small.size(text)[0] + 10
                 rect = self.label(self.screen, text, (x - w // 2, 44), color=(255, 255, 255),
@@ -713,6 +728,15 @@ class App:
             if want and self.engine.aim_active:
                 self.toast("Мышь захвачена для прицела. %s — отпустить, F2 — выключить раскладку"
                            % keys.pretty(self.engine.aim["toggle"]), 4)
+
+    # ----- quality ---------------------------------------------------------
+
+    def next_quality(self):
+        """Cycle fast -> balanced -> high; applied by reconnecting (a second or two)."""
+        order = settings_mod.PRESET_ORDER
+        nxt = order[(order.index(self.quality) + 1) % len(order)] if self.quality in order else "balanced"
+        self.new_quality = nxt
+        self.running = False
 
     # ----- watch mode ------------------------------------------------------
 

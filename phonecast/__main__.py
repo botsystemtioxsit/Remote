@@ -123,6 +123,8 @@ def main(argv=None):
         return 0
 
     options = settings_mod.load()
+    if args.max_size is not None or args.bit_rate or args.max_fps:
+        options["quality"] = "custom"
     if args.max_size is not None:
         options["max_size"] = args.max_size
     if args.bit_rate:
