@@ -1,18 +1,76 @@
 {
   "name": "Standoff 2",
-  "packages": ["com.axlebolt.standoff2"],
+  "revision": 2,
+  "packages": [
+    "com.axlebolt.standoff2"
+  ],
   "mappings": [
-    {"type": "joystick", "x": 0.13, "y": 0.72, "radius": 0.13,
-     "up": "w", "left": "a", "down": "s", "right": "d"},
-    {"type": "aim", "toggle": "`", "x": 0.62, "y": 0.45, "radius": 0.25, "sensitivity": 1.0,
-     "auto": true},
-    {"type": "tap", "key": "mouse_left", "x": 0.776, "y": 0.765},
-    {"type": "tap", "key": "space", "x": 0.91, "y": 0.752},
-    {"type": "tap", "key": "lctrl", "x": 0.886, "y": 0.896},
-    {"type": "tap", "key": "c", "x": 0.886, "y": 0.896},
-    {"type": "tap", "key": "r", "x": 0.596, "y": 0.95},
-    {"type": "tap", "key": "q", "x": 0.925, "y": 0.331},
-    {"type": "tap", "key": "tab", "x": 0.5, "y": 0.07},
-    {"type": "tap", "key": "escape", "x": 0.949, "y": 0.037}
+    {
+      "type": "joystick",
+      "x": 0.13,
+      "y": 0.72,
+      "radius": 0.13,
+      "up": "w",
+      "left": "a",
+      "down": "s",
+      "right": "d"
+    },
+    {
+      "type": "aim",
+      "toggle": "`",
+      "x": 0.62,
+      "y": 0.45,
+      "radius": 0.25,
+      "sensitivity": 1.0,
+      "auto": true
+    },
+    {
+      "type": "tap",
+      "key": "mouse_left",
+      "x": 0.776,
+      "y": 0.765
+    },
+    {
+      "type": "tap",
+      "key": "space",
+      "x": 0.91,
+      "y": 0.752
+    },
+    {
+      "type": "tap",
+      "key": "lctrl",
+      "x": 0.886,
+      "y": 0.896
+    },
+    {
+      "type": "tap",
+      "key": "c",
+      "x": 0.886,
+      "y": 0.896
+    },
+    {
+      "type": "tap",
+      "key": "r",
+      "x": 0.61,
+      "y": 0.95
+    },
+    {
+      "type": "tap",
+      "key": "q",
+      "x": 0.925,
+      "y": 0.331
+    },
+    {
+      "type": "tap",
+      "key": "tab",
+      "x": 0.5,
+      "y": 0.07
+    },
+    {
+      "type": "tap",
+      "key": "escape",
+      "x": 0.949,
+      "y": 0.037
+    }
   ]
 }

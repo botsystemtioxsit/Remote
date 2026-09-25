@@ -99,6 +99,36 @@ class SeedProfilesTest(unittest.TestCase):
             finally:
                 cli.bundled_profiles_dir = orig
 
+    def test_higher_revision_replaces_even_an_edited_copy_and_keeps_a_backup(self):
+        with tempfile.TemporaryDirectory() as bundled, tempfile.TemporaryDirectory() as user:
+            orig = cli.bundled_profiles_dir
+            cli.bundled_profiles_dir = lambda: bundled
+            try:
+                open(os.path.join(bundled, "g.json"), "w").write('{"v": 1}')
+                cli.seed_profiles(user)
+                open(os.path.join(user, "g.json"), "w").write('{"moved": 1}')        # edited v1
+                open(os.path.join(bundled, "g.json"), "w").write('{"revision": 2, "v": 2}')
+                cli.seed_profiles(user)
+                self.assertEqual(open(os.path.join(user, "g.json")).read(), '{"revision": 2, "v": 2}')
+                self.assertEqual(open(os.path.join(user, "g.json.bak")).read(), '{"moved": 1}')
+                # the user edits revision 2 in the editor: it keeps its revision and stays
+                open(os.path.join(user, "g.json"), "w").write('{"revision": 2, "moved": 2}')
+                open(os.path.join(bundled, "g.json"), "w").write('{"revision": 2, "v": 3}')
+                cli.seed_profiles(user)
+                self.assertEqual(open(os.path.join(user, "g.json")).read(), '{"revision": 2, "moved": 2}')
+            finally:
+                cli.bundled_profiles_dir = orig
+
+    def test_editor_save_keeps_revision(self):
+        from phonecast.keymap import Profile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "p.json")
+            open(path, "w").write('{"name": "x", "revision": 2, "mappings": []}')
+            p = Profile.load(path)
+            p.mappings.append({"type": "tap", "key": "q", "x": 0.1, "y": 0.1})
+            p.save()
+            self.assertEqual(Profile.load(path).revision, 2)
+
     def test_old_install_gets_fixed_standoff_profile(self):
         # Installed by the previous version: names-only record, v1 file unchanged.
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -114,6 +144,16 @@ class SeedProfilesTest(unittest.TestCase):
             cli.seed_profiles(user)
             data = open(os.path.join(user, "standoff2.json")).read()
             self.assertIn('"x": 0.776', data)  # the calibrated fire button
+
+    def test_edited_v1_standoff_is_replaced_too(self):
+        # The user moved circles of the broken v1 profile: revision 2 still wins.
+        with tempfile.TemporaryDirectory() as user:
+            open(os.path.join(user, "standoff2.json"), "w").write(
+                '{"name": "Standoff 2", "mappings": [{"type": "tap", "key": "g", "x": 0.7, "y": 0.8}]}')
+            open(os.path.join(user, ".bundled"), "w").write("standoff2.json\n")
+            cli.seed_profiles(user)
+            self.assertIn('"x": 0.776', open(os.path.join(user, "standoff2.json")).read())
+            self.assertTrue(os.path.exists(os.path.join(user, "standoff2.json.bak")))
 
 
     def test_new_bundled_profiles_arrive_deleted_ones_stay_deleted(self):

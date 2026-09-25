@@ -1,16 +1,17 @@
 {
   "name": "Brawl Stars",
+  "revision": 2,
   "packages": ["com.supercell.brawlstars"],
   "mappings": [
-    {"type": "joystick", "x": 0.14, "y": 0.75, "radius": 0.12,
+    {"type": "joystick", "x": 0.189, "y": 0.516, "radius": 0.14,
      "up": "w", "left": "a", "down": "s", "right": "d"},
-    {"type": "skill", "key": "mouse_left", "x": 0.85, "y": 0.74, "radius": 0.11,
-     "origin": [0.5, 0.52], "range": 0.35},
-    {"type": "skill", "key": "mouse_right", "x": 0.74, "y": 0.84, "radius": 0.11,
-     "origin": [0.5, 0.52], "range": 0.35},
-    {"type": "tap", "key": "space", "x": 0.85, "y": 0.74},
-    {"type": "tap", "key": "e", "x": 0.9, "y": 0.52},
-    {"type": "tap", "key": "q", "x": 0.65, "y": 0.9},
+    {"type": "skill", "key": "mouse_left", "x": 0.893, "y": 0.559, "radius": 0.11,
+     "origin": [0.5, 0.5], "range": 0.35},
+    {"type": "skill", "key": "mouse_right", "x": 0.723, "y": 0.576, "radius": 0.11,
+     "origin": [0.5, 0.5], "range": 0.35},
+    {"type": "tap", "key": "space", "x": 0.893, "y": 0.559},
+    {"type": "tap", "key": "e", "x": 0.849, "y": 0.824},
+    {"type": "tap", "key": "q", "x": 0.676, "y": 0.892},
     {"type": "android", "key": "escape", "action": "back"}
   ]
 }

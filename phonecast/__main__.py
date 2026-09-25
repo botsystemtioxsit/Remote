@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -28,12 +29,21 @@ def _sha256(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _revision(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return int(json.load(f).get("revision", 1))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1
+
+
 def seed_profiles(directory):
     """Bring the profiles shipped with the program into the user's folder.
 
     - a new bundled profile is copied once;
-    - an updated bundled profile replaces the user's copy only if the user
-      never changed that copy;
+    - an updated bundled profile replaces the user's copy if the user never
+      changed that copy, or if its "revision" is higher (a fix that must
+      reach everyone; the user's copy is kept as <file>.bak);
     - profiles the user deleted stay deleted, edited ones are never touched.
     The record (.bundled) holds "file sha256" of what was delivered.
     """
@@ -68,6 +78,12 @@ def seed_profiles(directory):
             if user_sha == delivered or (delivered is None and user_sha in PREVIOUS_BUNDLED_SHA256):
                 shutil.copy(bundled, dest)  # untouched copy: take the new version
                 record[fname] = new_sha
+            elif _revision(bundled) > _revision(dest):
+                shutil.copy(dest, dest + ".bak")
+                shutil.copy(bundled, dest)
+                record[fname] = new_sha
+                print("phonecast: %s updated to revision %d, your old copy is %s.bak"
+                      % (fname, _revision(bundled), fname))
     with open(record_path, "w", encoding="utf-8") as f:
         for fname in sorted(record):
             f.write(("%s %s\n" % (fname, record[fname])) if record[fname] else fname + "\n")

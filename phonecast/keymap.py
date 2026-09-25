@@ -58,11 +58,12 @@ MAPPING_POINTER_BASE = 300
 
 
 class Profile:
-    def __init__(self, name, mappings=None, packages=None, path=None):
+    def __init__(self, name, mappings=None, packages=None, path=None, revision=None):
         self.name = name
         self.mappings = mappings or []
         self.packages = packages or []
         self.path = path
+        self.revision = revision  # version of a profile shipped with the program
 
     @classmethod
     def load(cls, path):
@@ -76,10 +77,14 @@ class Profile:
         for m in mappings:
             validate_mapping(m)
         return cls(data.get("name") or os.path.splitext(os.path.basename(path or "profile"))[0],
-                   mappings, data.get("packages", []), path)
+                   mappings, data.get("packages", []), path, data.get("revision"))
 
     def to_dict(self):
-        return {"name": self.name, "packages": self.packages, "mappings": self.mappings}
+        data = {"name": self.name, "packages": self.packages, "mappings": self.mappings}
+        if self.revision is not None:
+            data = {"name": self.name, "revision": self.revision, "packages": self.packages,
+                    "mappings": self.mappings}
+        return data
 
     def save(self, path=None):
         path = path or self.path
