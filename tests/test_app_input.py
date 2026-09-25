@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 import unittest
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -60,6 +61,9 @@ class MouseRoutingTest(unittest.TestCase):
                             "radius": 0.1, "origin": [0.5, 0.5], "range": 0.35}])
         app._mouse_button(Ev(1, (900, 250)), True)   # cursor right of the character
         app._mouse_button(Ev(1, (900, 250)), False)
+        for _ in range(50):                          # the app loop keeps running
+            time.sleep(0.005)
+            app.engine.update()
         t = touches(s)
         self.assertEqual(t[0], (0, 300, 800, 350))   # finger down on the attack button
         self.assertEqual(t[-1][0:2], (1, 300))       # released: fires

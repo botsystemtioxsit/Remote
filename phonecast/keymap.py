@@ -53,6 +53,14 @@ from .keys import ANDROID_ACTIONS
 
 AIM_POINTER_ID = 100
 SKILL_DEADZONE = 0.03
+
+# Touch timing. Games read touches once per frame (~16 ms at 60 fps): a
+# finger that goes down and moves within the same frame is seen as appearing
+# at its final position, so a floating joystick centers itself under it and
+# nothing moves. Space events like a real finger does.
+TOUCH_STEP = 0.025      # a move comes at least this long after the finger went down
+MIN_HOLD = 0.04         # a finger is not lifted sooner than this after going down
+REPRESS_GAP = 0.02      # a lifted finger goes down again only after this
 JOYSTICK_POINTER_BASE = 200
 MAPPING_POINTER_BASE = 300
 
@@ -163,8 +171,12 @@ class Engine:
     `aspect()` returns the current frame width / height.
     """
 
-    def __init__(self, touch, keycode, aspect):
-        self._touch = touch
+    def __init__(self, touch, keycode, aspect, clock=time.monotonic):
+        self._raw = touch
+        self._clock = clock
+        self._queue = {}       # pointer id -> [[due, action, x, y], ...] not sent yet
+        self._down_at = {}     # pointer id -> time its last DOWN is (or will be) sent
+        self._up_at = {}       # pointer id -> time its last UP is (or will be) sent
         self._keycode = keycode
         self._aspect = aspect
         self.profile = None
@@ -245,7 +257,7 @@ class Engine:
                     pid = MAPPING_POINTER_BASE + i
                     self._skills[key] = [pid, m, (m["x"], m["y"])]
                     self._touch(control.ACTION_DOWN, pid, m["x"], m["y"])
-                    self._move_skill(key)
+                    self._move_skill(key, first=True)
         return True
 
     def key_up(self, key):
@@ -277,7 +289,7 @@ class Engine:
         for key in self._skills:
             self._move_skill(key)
 
-    def _move_skill(self, key):
+    def _move_skill(self, key, first=False):
         st = self._skills[key]
         pid, m, pos = st
         aspect = self._aspect() or 1.0
@@ -292,7 +304,13 @@ class Engine:
             target = (_clamp01(m["x"] + dx / dist * k / aspect), _clamp01(m["y"] + dy / dist * k))
         if target != pos:
             st[2] = target
-            self._touch(control.ACTION_MOVE, pid, *target)
+            if first:
+                # like the joystick: half way first, then the full drag
+                self._touch(control.ACTION_MOVE, pid, (pos[0] + target[0]) / 2,
+                            (pos[1] + target[1]) / 2, coalesce=False)
+                self._touch(control.ACTION_MOVE, pid, *target, gap=TOUCH_STEP, coalesce=False)
+            else:
+                self._touch(control.ACTION_MOVE, pid, *target)
 
     def mouse_motion(self, dx, dy):
         """Relative mouse motion (in window pixels) while aiming."""
@@ -329,10 +347,23 @@ class Engine:
         self.aim_active = active
 
     def update(self, now=None):
-        """Advance time-based animations (swipes). Call every frame."""
+        """Send touches whose time has come and advance swipes. Call every frame."""
+        now = self._clock() if now is None else now
+        for pid, q in self._queue.items():
+            while q and q[0][0] <= now:
+                due, action, x, y = q.pop(0)
+                self._raw(action, pid, x, y)
+                late = now - due
+                if late > 0:
+                    # keep the spacing of what follows (this loop runs every few ms)
+                    for item in q:
+                        item[0] += late
+                    if action == control.ACTION_DOWN:
+                        self._down_at[pid] = now
+                    elif action == control.ACTION_UP:
+                        self._up_at[pid] = now
         if not self._swipes:
             return
-        now = time.monotonic() if now is None else now
         still = []
         for s in self._swipes:
             t = (now - s["start"]) / s["duration"] if s["duration"] > 0 else 1.0
@@ -348,24 +379,62 @@ class Engine:
 
     def release_all(self):
         """Lift every finger the engine holds (profile switch, focus loss...)."""
+        for pid, q in self._queue.items():
+            for _due, action, x, y in q:
+                self._raw(action, pid, x, y)
+        self._queue = {}
         for held in self._held.values():
-            self._touch(control.ACTION_UP, *held)
+            self._raw(control.ACTION_UP, *held)
         for i, st in self._joy_state.items():
             st["pressed"].clear()
             st["walk"] = False
             if st["down"]:
-                self._touch(control.ACTION_UP, JOYSTICK_POINTER_BASE + i, *st["down"])
+                self._raw(control.ACTION_UP, JOYSTICK_POINTER_BASE + i, *st["down"])
                 st["down"] = None
         for s in self._swipes:
-            self._touch(control.ACTION_UP, s["pid"], *s["to"])
+            self._raw(control.ACTION_UP, s["pid"], *s["to"])
         for pid, _m, pos in self._skills.values():
-            self._touch(control.ACTION_UP, pid, *pos)
+            self._raw(control.ACTION_UP, pid, *pos)
         self._skills = {}
         self._held.clear()
+        if self._aim_pos is not None:
+            self._raw(control.ACTION_UP, AIM_POINTER_ID, *self._aim_pos)
+            self._aim_pos = None
         self._swipes = []
         self.set_aim_active(False)
 
     # ----- internals -----------------------------------------------------
+
+    def _touch(self, action, pid, x, y, gap=0.0, coalesce=True):
+        """Send a touch now, or queue it so that the finger behaves like a
+        real one (see TOUCH_STEP). Events of one finger keep their order.
+        gap: at least this long after the previous event of this finger.
+        coalesce: a move replaces a move still waiting in the queue, so mouse
+        motion never piles up."""
+        now = self._clock()
+        q = self._queue.setdefault(pid, [])
+        due = now
+        if q and gap:
+            due = q[-1][0] + gap
+        if action == control.ACTION_MOVE:
+            due = max(due, self._down_at.get(pid, -1.0) + TOUCH_STEP)
+            if coalesce and q and q[-1][1] == control.ACTION_MOVE:
+                q[-1][2], q[-1][3] = x, y
+                return
+        elif action == control.ACTION_UP:
+            due = max(due, self._down_at.get(pid, -1.0) + MIN_HOLD)
+        elif action == control.ACTION_DOWN:
+            due = max(due, self._up_at.get(pid, -1.0) + REPRESS_GAP)
+        if q:
+            due = max(due, q[-1][0])
+        if action == control.ACTION_DOWN:
+            self._down_at[pid] = due
+        elif action == control.ACTION_UP:
+            self._up_at[pid] = due
+        if due <= now and not q:
+            self._raw(action, pid, x, y)
+        else:
+            q.append([due, action, x, y])
 
     def _start_swipe(self, i, m):
         pid = MAPPING_POINTER_BASE + i
@@ -375,7 +444,7 @@ class Engine:
         self._touch(control.ACTION_DOWN, pid, x0, y0)
         self._swipes.append({
             "pid": pid, "from": tuple(m["from"]), "to": tuple(m["to"]),
-            "start": time.monotonic(), "duration": float(m.get("duration", 150)) / 1000.0,
+            "start": self._clock(), "duration": float(m.get("duration", 150)) / 1000.0,
         })
 
     def _update_joystick(self, i, m):
@@ -397,10 +466,13 @@ class Engine:
         ty = _clamp01(cy + vy / norm * scale)
         if not st["down"]:
             self._touch(control.ACTION_DOWN, pid, cx, cy)
-            # A small intermediate step makes games register a drag, not a tap.
-            self._touch(control.ACTION_MOVE, pid, (cx + tx) / 2, (cy + ty) / 2)
+            # Down, then half way one step later, then the full deflection:
+            # the game sees the touch start at the center and then drag.
+            self._touch(control.ACTION_MOVE, pid, (cx + tx) / 2, (cy + ty) / 2, coalesce=False)
+            self._touch(control.ACTION_MOVE, pid, tx, ty, gap=TOUCH_STEP, coalesce=False)
+        else:
+            self._touch(control.ACTION_MOVE, pid, tx, ty)
         st["down"] = (tx, ty)
-        self._touch(control.ACTION_MOVE, pid, tx, ty)
 
 
 def new_profile(name, directory):
