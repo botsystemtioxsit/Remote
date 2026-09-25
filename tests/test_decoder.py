@@ -1,7 +1,6 @@
 import fractions
 import socket
 import struct
-import threading
 import time
 import unittest
 
