@@ -30,6 +30,30 @@ def packet(data, key, pts):
 
 
 class LagGuardTest(unittest.TestCase):
+    def test_startup_spike_and_steady_delay_do_not_cause_resync_storms(self):
+        pkts = encode(80, gop=20)
+        a, b = socket.socketpair()
+        requests = []
+        dec = VideoDecoder(b, request_keyframe=lambda: requests.append(1))
+        dec.start()
+        now_us = lambda: int(time.monotonic() * 1e6)  # noqa: E731
+        # startup: a 1 s hiccup right after connecting is not a backlog
+        a.sendall(packet(*pkts[0], now_us()))
+        a.sendall(packet(*pkts[1], now_us() - 1_000_000))
+        for data, key in pkts[2:10]:
+            a.sendall(packet(data, key, now_us()))
+            time.sleep(0.25)
+        self.assertEqual(dec.drop_count, 0)
+        # after warmup the link settles on a steady extra 0.5 s: one resync at most
+        for data, key in pkts[10:80]:
+            a.sendall(packet(data, key, now_us() - 500_000))
+            time.sleep(0.02)
+        time.sleep(0.3)
+        self.assertLessEqual(dec.drop_count, 1)
+        self.assertGreater(dec.frame_count, 50)
+        a.close()
+        dec.join(2)
+
     def test_drops_backlog_and_resyncs_on_keyframe(self):
         pkts = encode(60, gop=20)  # keyframes at 0, 20, 40
         self.assertTrue(pkts[0][1] and pkts[20][1] and pkts[40][1])
@@ -39,9 +63,10 @@ class LagGuardTest(unittest.TestCase):
         dec.start()
         now_us = lambda: int(time.monotonic() * 1e6)  # noqa: E731
 
-        # 0..9 on time
+        # 0..9 on time (spread over the startup warmup period)
         for data, key in pkts[:10]:
             a.sendall(packet(data, key, now_us()))
+            time.sleep(0.22)
         time.sleep(0.3)
         self.assertEqual(dec.frame_count, 10)
         # 10..19 arrive 1 s late (a backlog): must be skipped, keyframe requested

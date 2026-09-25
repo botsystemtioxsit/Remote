@@ -15,7 +15,6 @@ os.environ.setdefault("SDL_VIDEO_X11_WMCLASS", "phonecast")
 os.environ.setdefault("SDL_VIDEO_WAYLAND_WMCLASS", "phonecast")
 import pygame  # noqa: E402
 
-from . import settings as settings_mod  # noqa: E402
 from .adb import Adb, AdbError  # noqa: E402
 from .app import App, _font  # noqa: E402
 from .keymap import load_profiles  # noqa: E402
@@ -88,29 +87,20 @@ class Launcher:
                     session.close()
                 if app.quit_requested:
                     return 0
-                if app.lower_quality:
-                    what = settings_mod.lower_quality(self.options)
-                    if what:
-                        self._persist_quality()
-                        self.message = "Компьютер не успевал за видео: %s." % what
-                    else:
-                        self.message = "Компьютер не успевает за видео даже в минимальном качестве."
-                else:
-                    self.message = "Связь с телефоном потеряна."
-                    print("phonecast: connection lost", file=sys.stderr)
+                self.message = "Связь с телефоном потеряна."
+                print("phonecast: connection lost (%s)" % (app.decoder.error or "video stream ended"),
+                      file=sys.stderr)
         finally:
             pygame.quit()
-
-    def _persist_quality(self):
-        saved = settings_mod.load()
-        saved["max_size"] = self.options["max_size"]
-        saved["max_fps"] = self.options["max_fps"]
-        settings_mod.save(saved)
 
     # ----- waiting screen ------------------------------------------------
 
     def _wait_for_phone(self):
-        screen = pygame.display.set_mode((760, 460), pygame.RESIZABLE)
+        # Keep the current window (after a lost connection) instead of
+        # closing and reopening a small one.
+        screen = pygame.display.get_surface()
+        if screen is None:
+            screen = pygame.display.set_mode((760, 460), pygame.RESIZABLE)
         pygame.display.set_caption("Phonecast")
         pygame.event.set_grab(False)
         pygame.mouse.set_visible(True)

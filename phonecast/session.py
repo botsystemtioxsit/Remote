@@ -25,6 +25,7 @@ DEVICE_SERVER_PATH = "/data/local/tmp/phonecast-server.jar"
 
 CODEC_H264 = 0x68323634  # "h264"
 CODEC_RAW = 0x00726177   # "raw"
+CODEC_OPUS = 0x6F707573  # "opus"
 
 PACKET_FLAG_CONFIG = 1 << 63
 PACKET_FLAG_KEY_FRAME = 1 << 62
@@ -146,7 +147,9 @@ class Session:
                 "video_bit_rate=%d" % self.bit_rate,
                 "max_fps=%d" % self.max_fps,
                 "audio=%s" % ("true" if self.want_audio else "false"),
-                "audio_codec=raw",
+                # Opus: ~0.13 Mbit/s instead of 1.5 Mbit/s for raw PCM, leaving
+                # the USB link to the video.
+                "audio_codec=opus",
                 "control=true",
                 "stay_awake=%s" % ("true" if self.stay_awake else "false"),
                 "clipboard_autosync=false",
@@ -175,8 +178,8 @@ class Session:
 
         if self.audio_sock:
             (acodec,) = struct.unpack(">I", recv_exact(self.audio_sock, 4))
-            if acodec == CODEC_RAW:
-                self.audio_codec = "raw"
+            if acodec in (CODEC_OPUS, CODEC_RAW):
+                self.audio_codec = "opus" if acodec == CODEC_OPUS else "raw"
             else:
                 # 0: audio unavailable (Android < 11 or capture refused); continue without it.
                 self.audio_sock.close()

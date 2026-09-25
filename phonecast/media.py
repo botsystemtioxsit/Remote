@@ -13,7 +13,12 @@ from .session import read_packet
 
 # If the picture lags this far behind the phone, drop what is queued and ask
 # the phone for a fresh keyframe instead of letting the delay keep growing.
-MAX_LAG_US = 150_000
+MAX_LAG_US = 300_000
+# The "no lag" reference slowly follows the observed delay, so a steady extra
+# delay of the link is absorbed while a growing backlog (much faster) is not.
+BASE_DRIFT = 0.02          # 20 ms per second
+WARMUP_S = 2.0             # startup hiccups (window creation...) are not backlog
+KEYFRAME_RETRY_S = 1.5     # ask again if the requested keyframe does not come
 
 
 class VideoDecoder(threading.Thread):
@@ -51,8 +56,11 @@ class VideoDecoder(threading.Thread):
         except (AttributeError, ValueError, TypeError):
             pass
         config = b""
-        base = None          # smallest (arrival time - pts) seen: "no lag" reference
+        base = None          # (arrival time - pts) when not lagging: reference
+        base_t = 0.0
+        started = 0.0
         skipping = False     # waiting for a keyframe after falling behind
+        requested = 0.0
         try:
             while True:
                 pts, is_config, key, payload = read_packet(self.sock)
@@ -63,18 +71,27 @@ class VideoDecoder(threading.Thread):
                     base = None
                     continue
 
-                d = time.monotonic() * 1e6 - pts
-                if base is None or d < base:
-                    base = d
+                now = time.monotonic()
+                d = now * 1e6 - pts
+                if base is None:
+                    base, base_t, started = d, now, now
+                base += (now - base_t) * 1e6 * BASE_DRIFT
+                base_t = now
+                base = min(base, d)
                 self.lag_ms = int((d - base) / 1000)
                 if skipping:
                     if not key:
+                        if now - requested > KEYFRAME_RETRY_S and self.request_keyframe:
+                            requested = now
+                            self.request_keyframe()
                         continue
                     skipping = False
-                elif d - base > MAX_LAG_US and not key:
+                    base = d  # resynced: this is the new reference
+                elif d - base > MAX_LAG_US and not key and now - started > WARMUP_S:
                     skipping = True
                     self.drop_count += 1
                     if self.request_keyframe:
+                        requested = now
                         self.request_keyframe()
                     continue
 
@@ -116,10 +133,13 @@ def find_audio_player():
 
 
 class AudioPlayer(threading.Thread):
-    def __init__(self, sock, command):
+    """Plays the phone audio: Opus (decoded here) or raw PCM, 48 kHz stereo."""
+
+    def __init__(self, sock, command, codec="opus"):
         super().__init__(daemon=True, name="audio")
         self.sock = sock
         self.command = command
+        self.codec = codec
         self.muted = False
         self._proc = None
 
@@ -132,11 +152,28 @@ class AudioPlayer(threading.Thread):
             self._drain()
             return
         silence = b""
+        decoder = None
+        resampler = av.AudioResampler(format="s16", layout="stereo", rate=48000)
         try:
             while True:
                 _pts, is_config, _key, payload = read_packet(self.sock)
                 if is_config:
+                    if self.codec == "opus":
+                        # OpusHead: the decoder's extradata
+                        decoder = av.CodecContext.create("opus", "r")
+                        decoder.extradata = payload
                     continue
+                if self.codec == "opus":
+                    if decoder is None:
+                        continue
+                    try:
+                        frames = decoder.decode(av.Packet(payload))
+                    except av.error.FFmpegError:
+                        continue
+                    payload = b"".join(bytes(r.planes[0])[: r.samples * 4]
+                                       for f in frames for r in resampler.resample(f))
+                    if not payload:
+                        continue
                 if self.muted:
                     if len(silence) != len(payload):
                         silence = bytes(len(payload))

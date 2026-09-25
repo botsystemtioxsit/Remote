@@ -96,7 +96,7 @@ class EndToEndTest(unittest.TestCase):
         session = Session(a, audio=True, server_file=server_file).start()
         self.assertEqual(session.device_name, "Fake Phone")
         self.assertEqual(session.initial_size, (640, 360))
-        self.assertEqual(session.audio_codec, "raw")
+        self.assertEqual(session.audio_codec, "opus")
 
         app = App(session, a, [], profiles_dir)
         seen = {"rotated": False, "landscape_again": False}

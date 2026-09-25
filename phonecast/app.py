@@ -108,7 +108,6 @@ class App:
         self.focused = True
 
         self.quit_requested = False   # the user closed the window
-        self.lower_quality = False    # too slow: reconnect with a smaller video
         self.stats = {"decoded": 0, "shown": 0, "lag": 0}
         self._shown = 0
 
@@ -213,7 +212,7 @@ class App:
         if self.session.audio_sock:
             player = find_audio_player()
             if player:
-                AudioPlayer(self.session.audio_sock, player).start()
+                AudioPlayer(self.session.audio_sock, player, self.session.audio_codec).start()
             else:
                 print("phonecast: no audio player found (pacat/pw-cat/aplay), audio disabled",
                       file=sys.stderr)
@@ -277,12 +276,11 @@ class App:
             self._drops_seen = drops
             now = time.monotonic()
             self._drop_times = [t for t in getattr(self, "_drop_times", []) if now - t < 30] + [now]
-            if len(self._drop_times) >= 3:
-                # Repeatedly too slow: reconnect with a smaller video (the
-                # launcher lowers the resolution and remembers it).
-                self._drop_times = []
-                self.lower_quality = True
-                self.running = False
+            if len(self._drop_times) >= 3 and not getattr(self, "_slow_warned", False):
+                # Only a hint: reconnecting on our own is worse than a skipped frame.
+                self._slow_warned = True
+                self.toast("Видео не успевает: уменьшите max_size или bit_rate в "
+                           "~/.config/phonecast/settings.json", 8)
 
     def _on_device_gone(self):
         self.device_gone = True

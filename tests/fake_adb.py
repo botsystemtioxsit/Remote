@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-STATE = os.environ["FAKE_ADB_DIR"]
+STATE = os.environ.get("FAKE_ADB_DIR", "")
 
 
 def port_file():
@@ -99,7 +99,7 @@ def serve(with_audio):
     video.sendall(name)
     video.sendall(struct.pack(">III", 0x68323634, 640, 360))
     if audio:
-        audio.sendall(struct.pack(">I", 0x00726177))
+        audio.sendall(struct.pack(">I", 0x6F707573))  # "opus"
         threading.Thread(target=send_audio, args=(audio,), daemon=True).start()
 
     t0 = time.monotonic()
@@ -127,12 +127,31 @@ def serve(with_audio):
             sock.close()
 
 
+def opus_packets(seconds=1.0):
+    """(OpusHead config, [20 ms packets]) of a 440 Hz tone, like the phone sends."""
+    import av
+    import numpy as np
+    enc = av.CodecContext.create("libopus", "w")
+    enc.sample_rate, enc.layout, enc.format, enc.bit_rate = 48000, "stereo", "s16", 128000
+    n = int(48000 * seconds)
+    tone = (np.sin(2 * np.pi * 440 * np.arange(n) / 48000) * 8000).astype(np.int16)
+    packets = []
+    for i in range(0, n, 960):
+        chunk = np.repeat(tone[i:i + 960][None, :], 2, axis=0).T.reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(chunk, format="s16", layout="stereo")
+        frame.sample_rate, frame.pts = 48000, i
+        packets += [bytes(p) for p in enc.encode(frame)]
+    return bytes(enc.extradata), packets
+
+
 def send_audio(sock):
-    chunk = bytes(1920 * 2)  # 10 ms of silence, s16le stereo 48 kHz
+    head, packets = opus_packets()
     try:
+        sock.sendall(struct.pack(">QI", 1 << 63, len(head)) + head)
         while True:
-            sock.sendall(struct.pack(">QI", 0, len(chunk)) + chunk)
-            time.sleep(0.01)
+            for p in packets:
+                sock.sendall(struct.pack(">QI", 0, len(p)) + p)
+                time.sleep(0.02)
     except OSError:
         pass
 

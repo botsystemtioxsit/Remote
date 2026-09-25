@@ -3,9 +3,15 @@
 import json
 import os
 
+# Bumped when defaults change in a way that must replace values saved by an
+# older version (quality settings that older versions lowered automatically).
+VERSION = 2
+QUALITY_KEYS = ("max_size", "bit_rate", "max_fps")
+
 DEFAULTS = {
+    "version": VERSION,
     "max_size": 1280,        # larger side of the video, px (0 = phone resolution)
-    "bit_rate": "8M",
+    "bit_rate": "6M",
     "max_fps": 60,
     "audio": True,
     "fullscreen": False,
@@ -13,9 +19,6 @@ DEFAULTS = {
     # Apps in which PC mode (real keyboard + mouse on the phone) turns on by itself
     "pc_mode_apps": ["com.mojang.minecraftpe"],
 }
-
-# Steps used when the computer cannot keep up with the video.
-QUALITY_STEPS = [1920, 1600, 1280, 1024, 800]
 
 
 def config_dir():
@@ -32,7 +35,13 @@ def load():
     try:
         with open(settings_path(), encoding="utf-8") as f:
             data = json.load(f)
-        settings.update({k: v for k, v in data.items() if k in DEFAULTS})
+        if data.get("version", 1) < VERSION:
+            for key in QUALITY_KEYS + ("version",):
+                data.pop(key, None)
+            settings.update({k: v for k, v in data.items() if k in DEFAULTS})
+            save(settings)
+        else:
+            settings.update({k: v for k, v in data.items() if k in DEFAULTS})
     except FileNotFoundError:
         save(settings)  # create it so it is easy to find and edit
     except (OSError, ValueError) as e:
@@ -51,16 +60,3 @@ def save(settings):
         os.replace(tmp, path)
     except OSError as e:
         print("phonecast: cannot save settings: %s" % e)
-
-
-def lower_quality(settings):
-    """Make the video lighter. Returns a description, or None if already minimal."""
-    size = settings["max_size"] or 10000
-    for step in QUALITY_STEPS:
-        if step < size:
-            settings["max_size"] = step
-            return "разрешение снижено до %d px" % step
-    if settings["max_fps"] > 30:
-        settings["max_fps"] = 30
-        return "частота кадров снижена до 30"
-    return None
