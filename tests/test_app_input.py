@@ -140,24 +140,77 @@ class WatchModeTest(unittest.TestCase):
         ups = {t[1] for t in touches(s) if t[0] == 1}
         self.assertEqual(downs, ups)  # nothing stays pressed on the phone
 
-    def test_waiting_screen_mode_buttons(self):
-        from phonecast import settings
-        from phonecast.launcher import Launcher
-        pygame.display.init()
-        screen = pygame.display.set_mode((760, 460))
-        opts = settings.load()
-        self.assertEqual(opts["mode"], "control")
-        launcher = Launcher(opts, "/nonexistent")
+
+
+def chord():
+    """Ctrl held, then Alt pressed: the settings shortcut."""
+    return pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LALT, scancode=226,
+                              mod=pygame.KMOD_LCTRL | pygame.KMOD_LALT)
+
+
+class SettingsPanelTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = tempfile.TemporaryDirectory()
+        os.environ["XDG_CONFIG_HOME"] = self.cfg.name
         pygame.font.init()
+
+    def tearDown(self):
+        del os.environ["XDG_CONFIG_HOME"]
+        self.cfg.cleanup()
+
+    def open_app(self, mappings=()):
         from phonecast.app import _font
-        launcher.font, launcher.font_title, launcher.font_status = _font(16), _font(28), _font(19)
-        launcher._draw(screen)
-        rect = next(r for r, mode in launcher._mode_buttons if mode == "watch")
-        pygame.event.clear()
-        launcher.set_mode("watch")
-        self.assertEqual(settings.load()["mode"], "watch")
-        self.assertEqual(launcher.options["mode"], "watch")
-        self.assertGreater(rect.w, 100)
+        app, s = make_app(list(mappings))
+        app.keymap_on = False
+        app.screen = pygame.display.set_mode((1000, 600))
+        app.font, app.font_small, app.font_big = _font(16), _font(13), _font(18)
+        return app, s
+
+    def click_choice(self, app, key, value):
+        app.panel.draw(app.screen)
+        rect = next(r for r, k, v in app.panel._buttons if k == key and v == value)
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+
+    def test_ctrl_alt_opens_and_closes_and_nothing_reaches_the_phone(self):
+        app, s = self.open_app()
+        app.handle_event(chord())
+        self.assertIsNotNone(app.panel)
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(5, 5)))
+        self.assertEqual(s.sent, [])                   # clicks go to the panel, not the phone
+        app.handle_event(chord())
+        self.assertIsNone(app.panel)
+        self.assertFalse(app.reconnect)
+
+    def test_ctrl_alt_is_not_the_alt_battle_switch(self):
+        app, _ = self.open_app([{"type": "tap", "key": "space", "x": 0.5, "y": 0.5}])
+        app.set_keymap(True)
+        app.handle_event(chord())
+        app.handle_event(pygame.event.Event(pygame.KEYUP, key=pygame.K_LALT, scancode=226, mod=0))
+        self.assertTrue(app.keymap_on)                 # still in battle
+        self.assertIsNotNone(app.panel)
+
+    def test_mode_applies_at_once_quality_after_closing(self):
+        from phonecast import settings
+        app, _ = self.open_app()
+        app.handle_event(chord())
+        self.click_choice(app, "mode", "watch")
+        self.assertTrue(app.watch)
+        self.click_choice(app, "quality", "high")
+        self.assertTrue(app.running)                   # not yet
+        app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, scancode=41, mod=0))
+        self.assertTrue(app.reconnect)
+        self.assertFalse(app.running)                  # the launcher reconnects
+        saved = settings.load()
+        self.assertEqual((saved["mode"], saved["quality"]), ("watch", "high"))
+
+    def test_hints_hidden_by_default_and_f4_is_remembered(self):
+        from phonecast import settings
+        self.assertFalse(settings.load()["show_hints"])
+        app, _ = self.open_app()
+        self.assertFalse(app.show_hints)
+        app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=0, scancode=61, mod=0))  # F4
+        self.assertTrue(app.show_hints)
+        self.assertTrue(settings.load()["show_hints"])
 
 
 class SeedProfilesTest(unittest.TestCase):

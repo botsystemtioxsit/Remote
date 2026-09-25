@@ -16,16 +16,17 @@ from . import control, hid, keys  # noqa: E402
 from . import settings as settings_mod  # noqa: E402
 from .editor import PANEL_W, Editor  # noqa: E402
 from .keymap import Engine, new_profile  # noqa: E402
+from .settings_panel import SettingsPanel, is_chord  # noqa: E402
 from .media import AudioPlayer, VideoDecoder, find_audio_player  # noqa: E402
 
 MOUSE_POINTER_ID = 0
 
 HELP_LINES = [
-    "F1   — эта справка",
+    "F1   — эта справка               Ctrl+Alt — настройки (режим, качество, звук)",
     "Alt  — в игре: бой / меню (в меню мышь и клавиатура работают как обычно)",
     "F2   — включить / выключить раскладку игры",
     "F3   — настроить управление (как в BlueStacks)",
-    "F4   — показать / скрыть подсказки кнопок",
+    "F4   — показать / скрыть подсказки кнопок поверх игры (по умолчанию скрыты)",
     "F5   — следующий профиль раскладки",
     "F6   — недавние приложения        F7 — шторка уведомлений",
     "F8 / F9 — громкость − / +          F10 — экран телефона вкл/выкл",
@@ -60,7 +61,7 @@ def read_pc_clipboard():
 class App:
     def __init__(self, session, adb, profiles, profiles_dir, start_profile=None,
                  fullscreen=False, audio=True, screen_off=False, pc_mode_apps=(), mode="control",
-                 quality="balanced"):
+                 quality="balanced", show_hints=False):
         self.session = session
         self.adb = adb
         self.profiles = profiles
@@ -80,7 +81,8 @@ class App:
 
         self.keymap_on = False
         self.auto_keymap = False  # keymap was enabled automatically for an app
-        self.show_hints = True
+        self.show_hints = show_hints  # key labels over the game: hidden unless asked for
+        self.panel = None             # settings panel (Ctrl+Alt) while open
         self.show_help = False
         self.editor = None
         self.phone_screen_on = True
@@ -118,7 +120,7 @@ class App:
         # "watch": picture and sound only, nothing is sent to the phone
         self.watch = mode == "watch"
         self.quality = quality
-        self.new_quality = None       # set to reconnect with another quality preset
+        self.reconnect = False        # quality/audio changed: the launcher reconnects
         self.stats = {"decoded": 0, "shown": 0, "lag": 0}
         self._shown = 0
 
@@ -369,6 +371,8 @@ class App:
         if self.show_help:
             self._draw_help()
         self._draw_toasts()
+        if self.panel:
+            self.panel.draw(self.screen)
         pygame.display.flip()
 
     def _text_center(self, text):
@@ -455,28 +459,24 @@ class App:
             parts.append("МЕНЮ · %s · Alt — в бой" % self.profile.name)
         if not self.phone_screen_on:
             parts.append("экран телефона выкл.")
-        if parts:
+        if parts and self.show_hints:
             self.label(self.screen, "  ·  ".join(parts), (self.screen.get_width() // 2, 16),
                        color=(255, 230, 120))
         # Top bar (mode switch, configure controls): shown while the free
         # cursor is near the top edge of the window.
         self._bar = []
-        if not self.pc_mode and not self.grabbed and pygame.mouse.get_focused() \
+        if not self.pc_mode and not self.grabbed and not self.panel and pygame.mouse.get_focused() \
                 and pygame.mouse.get_pos()[1] < 70:
             x = self.screen.get_width() - 12
-            buttons = [("⚙ Настроить управление (F3)", self.toggle_editor)] if not self.watch else []
-            buttons.append(("Включить управление" if self.watch else "Только трансляция",
-                            lambda: self.set_watch(not self.watch)))
-            buttons.append(("Качество: %s ⇄" % settings_mod.PRESET_NAMES.get(self.quality, self.quality),
-                            self.next_quality))
+            buttons = [("⚙ Настройки (Ctrl+Alt)", self.toggle_settings)]
+            if not self.watch:
+                buttons.append(("Настроить управление (F3)", self.toggle_editor))
             for text, action in buttons:
                 w = self.font_small.size(text)[0] + 10
                 rect = self.label(self.screen, text, (x - w // 2, 44), color=(255, 255, 255),
-                                  bg=(40, 110, 200, 235) if action != self.toggle_editor else (60, 64, 76, 235))
+                                  bg=(40, 110, 200, 235) if action == self.toggle_settings else (60, 64, 76, 235))
                 self._bar.append((rect, action))
                 x = rect.left - 10
-            mode = "Режим: только трансляция" if self.watch else "Режим: управление"
-            self.label(self.screen, mode, (max(90, x - 90), 44), color=(200, 200, 210))
 
     def _draw_help(self):
         st = self.stats
@@ -522,6 +522,16 @@ class App:
             return
         if ev.type == pygame.WINDOWFOCUSGAINED:
             self.focused = True
+            return
+        if self.panel:
+            self.panel.handle_event(ev)
+            if self.panel.closed:
+                self.toggle_settings()
+            self.dirty = True
+            return
+        if is_chord(ev):
+            self._alt_alone = False
+            self.toggle_settings()
             return
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and not self.grabbed:
             for rect, action in self._bar:
@@ -600,6 +610,7 @@ class App:
             self.toggle_editor()
         elif name == "f4":
             self.show_hints = not self.show_hints
+            self._remember("show_hints", self.show_hints)
         elif name == "f5":
             self.next_profile()
         elif name == "f6":
@@ -719,7 +730,7 @@ class App:
             self._key_up(name)
 
     def _sync_grab(self):
-        want = self.engine.aim_active or (self.pc_mode and self.focused)
+        want = (self.engine.aim_active or (self.pc_mode and self.focused)) and not self.panel
         if want != self.grabbed:
             self.grabbed = want
             pygame.event.set_grab(want)
@@ -731,12 +742,49 @@ class App:
 
     # ----- quality ---------------------------------------------------------
 
-    def next_quality(self):
-        """Cycle fast -> balanced -> high; applied by reconnecting (a second or two)."""
-        order = settings_mod.PRESET_ORDER
-        nxt = order[(order.index(self.quality) + 1) % len(order)] if self.quality in order else "balanced"
-        self.new_quality = nxt
-        self.running = False
+    def _remember(self, key, value):
+        saved = settings_mod.load()
+        saved[key] = value
+        settings_mod.save(saved)
+
+    # ----- settings panel (Ctrl+Alt) -----------------------------------------
+
+    def toggle_settings(self):
+        if self.panel is None:
+            self._release_everything()
+            if self.editor:
+                self.toggle_editor(save=True)
+            options = settings_mod.load()
+            options.update({"mode": "watch" if self.watch else "control", "quality": self.quality,
+                            "audio": self.want_audio, "show_hints": self.show_hints,
+                            "fullscreen": self.fullscreen, "screen_off": not self.phone_screen_on})
+            self.panel = SettingsPanel(options, self.font, self.font_big, on_change=self._setting_changed)
+            pygame.key.stop_text_input()
+        else:
+            panel, self.panel = self.panel, None
+            if not self.watch and not self.keymap_on and not self.pc_mode:
+                pygame.key.start_text_input()
+            if panel.needs_reconnect:
+                # quality / audio are fixed when the phone starts streaming
+                self.reconnect = True
+                self.running = False
+        self.dirty = True
+
+    def _setting_changed(self, key, value):
+        if key == "mode":
+            self.set_watch(value == "watch", remember=False)
+        elif key == "show_hints":
+            self.show_hints = value
+            self._hints_cache = None
+        elif key == "fullscreen" and value != self.fullscreen:
+            self.fullscreen = value
+            self._set_mode()
+        elif key == "screen_off" and value == self.phone_screen_on:
+            self.toggle_phone_screen()
+        elif key == "quality":
+            self.quality = value
+        elif key == "audio":
+            self.want_audio = value
 
     # ----- watch mode ------------------------------------------------------
 
