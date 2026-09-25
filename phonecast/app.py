@@ -12,7 +12,7 @@ import numpy
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
-from . import control, hid, keys  # noqa: E402
+from . import control, hid, keys, theme  # noqa: E402
 from . import settings as settings_mod  # noqa: E402
 from .editor import PANEL_W, Editor  # noqa: E402
 from .keymap import Engine, new_profile  # noqa: E402
@@ -39,11 +39,7 @@ HELP_LINES = [
 
 
 def _font(size, bold=False):
-    for name in ("dejavusans", "notosans", "liberationsans", "freesans", "ubuntu"):
-        path = pygame.font.match_font(name, bold=bold)
-        if path:
-            return pygame.font.Font(path, size)
-    return pygame.font.Font(None, int(size * 1.3))
+    return theme.font(size, bold)
 
 
 def read_pc_clipboard():
@@ -214,9 +210,7 @@ class App:
         except (AttributeError, IndexError, pygame.error):
             info = pygame.display.Info()
             self.desktop_size = (info.current_w or 1280, info.current_h or 720)
-        self.font = _font(16)
-        self.font_small = _font(13, bold=True)
-        self.font_big = _font(18, bold=True)
+        self._load_fonts()
 
         self.decoder = VideoDecoder(self.session.video_sock, on_eof=self._on_device_gone,
                                     request_keyframe=self._request_keyframe)
@@ -287,6 +281,11 @@ class App:
             pygame.event.set_grab(False)
             pygame.mouse.set_visible(True)
 
+    def _load_fonts(self):
+        self.font = _font(16)
+        self.font_small = _font(13, bold=True)
+        self.font_big = _font(18, bold=True)
+
     def _request_keyframe(self):
         # Called from the decoder thread when it fell behind the stream.
         self.session.send(control.reset_video())
@@ -347,7 +346,7 @@ class App:
         return True
 
     def _draw(self):
-        self.screen.fill((0, 0, 0))
+        self.screen.fill(theme.T.letterbox)
         if self.frame_surface:
             if self._scaled is None:
                 surf = self.frame_surface
@@ -377,14 +376,18 @@ class App:
         pygame.display.flip()
 
     def _text_center(self, text):
-        img = self.font_big.render(text, True, (220, 220, 220))
+        img = self.font_big.render(text, True, theme.T.text2)
         self.screen.blit(img, img.get_rect(center=self.screen.get_rect().center))
 
-    def label(self, surface, text, center, color=(255, 255, 255), bg=(0, 0, 0, 170)):
-        img = self.font_small.render(text, True, color)
-        r = img.get_rect(center=center).inflate(10, 6)
+    def label(self, surface, text, center, color=None, bg=None, border=None):
+        t = theme.T
+        img = self.font_small.render(text, True, color or t.label_text)
+        r = img.get_rect(center=center).inflate(12, 8)
         box = pygame.Surface(r.size, pygame.SRCALPHA)
-        pygame.draw.rect(box, bg, box.get_rect(), border_radius=6)
+        radius = min(t.radius, r.h // 2)
+        pygame.draw.rect(box, bg or t.label_bg, box.get_rect(), border_radius=radius)
+        if border:
+            pygame.draw.rect(box, border, box.get_rect(), 1, border_radius=radius)
         surface.blit(box, r.topleft)
         surface.blit(img, img.get_rect(center=center))
         return r
@@ -398,7 +401,7 @@ class App:
         fh = self.view.h
         for i, m in enumerate(self.profile.mappings):
             t = m["type"]
-            col = (255, 210, 0, alpha) if i == selected else (0, 200, 255, alpha)
+            col = (theme.T.sel if i == selected else theme.T.hint) + (alpha,)
             if t == "tap":
                 c = self.norm_to_window(m["x"], m["y"])
                 pygame.draw.circle(overlay, col, c, 20, 3)
@@ -461,8 +464,8 @@ class App:
         if not self.phone_screen_on:
             parts.append("экран телефона выкл.")
         if parts and self.show_hints:
-            self.label(self.screen, "  ·  ".join(parts), (self.screen.get_width() // 2, 16),
-                       color=(255, 230, 120))
+            self.label(self.screen, "  ·  ".join(parts), (self.screen.get_width() // 2, 18),
+                       color=theme.T.warn, border=theme.T.border)
         # Top bar (mode switch, configure controls): shown while the free
         # cursor is near the top edge of the window.
         self._bar = []
@@ -474,8 +477,11 @@ class App:
                 buttons.append(("Настроить управление (F3)", self.toggle_editor))
             for text, action in buttons:
                 w = self.font_small.size(text)[0] + 10
-                rect = self.label(self.screen, text, (x - w // 2, 44), color=(255, 255, 255),
-                                  bg=(40, 110, 200, 235) if action == self.toggle_settings else (60, 64, 76, 235))
+                primary = action == self.toggle_settings
+                rect = self.label(self.screen, text, (x - w // 2, 44),
+                                  color=theme.T.on_accent if primary else theme.T.text,
+                                  bg=theme.T.accent + (240,) if primary else theme.T.bar_bg,
+                                  border=None if primary else theme.T.border)
                 self._bar.append((rect, action))
                 x = rect.left - 10
 
@@ -487,20 +493,24 @@ class App:
             "Видео %dx%d · принято %d к/с · показано %d к/с · отставание %d мс"
             % (w, h, st["decoded"], st["shown"], st["lag"]),
         ]
-        w = max(self.font.size(line)[0] for line in lines) + 40
-        h = len(lines) * 24 + 30
-        box = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(box, (10, 10, 20, 225), box.get_rect(), border_radius=10)
+        t = theme.T
+        title = self.font_big.render(t.heading("Справка · F1"), True, t.accent)
+        w = max(self.font.size(line)[0] for line in lines) + 48
+        h = len(lines) * 24 + 76
+        box = pygame.Rect(0, 0, w, h)
+        box.center = self.screen.get_rect().center
+        theme.panel(self.screen, box, alpha=235)
+        self.screen.blit(title, (box.x + 24, box.y + 18))
         for i, line in enumerate(lines):
-            box.blit(self.font.render(line, True, (235, 235, 235)), (20, 15 + i * 24))
-        self.screen.blit(box, box.get_rect(center=self.screen.get_rect().center))
+            color = t.muted if i == len(lines) - 1 else t.text2
+            self.screen.blit(self.font.render(line, True, color), (box.x + 24, box.y + 56 + i * 24))
 
     def _draw_toasts(self):
         now = time.monotonic()
         self.toasts = [t for t in self.toasts if t[1] > now]
         y = self.screen.get_height() - 24
         for text, _ in reversed(self.toasts):
-            r = self.label(self.screen, text, (self.screen.get_width() // 2, y), bg=(0, 0, 0, 200))
+            r = self.label(self.screen, text, (self.screen.get_width() // 2, y), border=theme.T.border)
             y -= r.h + 6
 
     # ----- events --------------------------------------------------------
@@ -789,6 +799,9 @@ class App:
             self.quality = value
         elif key == "audio":
             self.want_audio = value
+        elif key == "theme":
+            self._load_fonts()
+            self._hints_cache = None
 
     # ----- watch mode ------------------------------------------------------
 

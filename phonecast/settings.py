@@ -34,6 +34,8 @@ DEFAULTS = {
     "show_hints": False,
     # mouse sensitivity in games: camera look (times the profile's own) and PC mode
     "mouse_sensitivity": 0.6,
+    # colour theme of the window, see phonecast/theme.py
+    "theme": "graphite",
     # Apps in which PC mode (real keyboard + mouse on the phone) turns on by itself
     "pc_mode_apps": ["com.mojang.minecraftpe"],
 }

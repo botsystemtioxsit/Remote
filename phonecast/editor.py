@@ -13,7 +13,7 @@ import os
 
 import pygame
 
-from . import keys
+from . import keys, theme
 
 PANEL_W = 270
 HANDLE_RADIUS = 24
@@ -354,14 +354,14 @@ class Editor:
 
     def draw(self, surface):
         shade = pygame.Surface(self.app.view.size, pygame.SRCALPHA)
-        shade.fill((0, 0, 30, 70))
+        shade.fill(theme.T.shade[:3] + (70,))
         surface.blit(shade, self.app.view.topleft)
         hover = self.hit(pygame.mouse.get_pos())
         self.app.draw_mappings(surface, alpha=230, selected=self.selected if hover is None else hover,
                                labels=False, areas=True)
         self._draw_labels(surface)
         if self.drag and self.drag["kind"] == "palette" and "pos" in self.drag:
-            pygame.draw.circle(surface, (255, 210, 0), self.drag["pos"], 22, 3)
+            pygame.draw.circle(surface, theme.T.sel, self.drag["pos"], 22, 3)
         self._draw_panel(surface)
 
     def _draw_labels(self, surface):
@@ -398,23 +398,20 @@ class Editor:
                     text += " →"
                 if t == "aim" and not waiting:
                     text = "обзор: " + text
-                color = (255, 110, 110) if waiting else (255, 255, 255)
-                bg = (90, 0, 0, 220) if waiting else ((120, 90, 0, 220) if i == self.selected
-                                                      else (0, 0, 0, 190))
-                rect = self.app.label(surface, text, pos, color=color, bg=bg)
+                t_ = theme.T
+                if waiting:
+                    color, bg = (255, 255, 255), t_.danger + (230,)
+                elif i == self.selected:
+                    color, bg = (20, 20, 20), t_.sel + (230,)
+                else:
+                    color, bg = None, None
+                rect = self.app.label(surface, text, pos, color=color, bg=bg, border=t_.border)
                 if i < len(self.profile.mappings):
                     self._labels.append((rect, i, role))
 
     def _button(self, surface, rect, text, action, primary=False, active=True):
-        mouse = pygame.mouse.get_pos()
-        base = (40, 110, 200) if primary else (55, 60, 72)
-        if not active:
-            base = (40, 42, 50)
-        elif rect.collidepoint(mouse):
-            base = tuple(min(255, c + 25) for c in base)
-        pygame.draw.rect(surface, base, rect, border_radius=7)
-        img = self.app.font.render(text, True, (240, 240, 245) if active else (130, 130, 140))
-        surface.blit(img, img.get_rect(center=rect.center))
+        theme.button(surface, rect, text, self.app.font, primary=primary, active=active,
+                     hover=rect.collidepoint(pygame.mouse.get_pos()))
         if active:
             self._buttons.append((rect, action, text))
 
@@ -422,21 +419,25 @@ class Editor:
         self._buttons = []
         x0 = self._panel_x()
         h = surface.get_height()
-        pygame.draw.rect(surface, (28, 30, 38), (x0, 0, PANEL_W, h))
+        th = theme.T
+        pygame.draw.rect(surface, th.surface, (x0, 0, PANEL_W, h))
+        pygame.draw.line(surface, th.border, (x0, 0), (x0, h))
         font, small = self.app.font, self.app.font_small
         x, w = x0 + 14, PANEL_W - 28
-        y = 12
+        y = 14
 
-        def text(t, color=(225, 225, 232), f=None):
+        def text(t, color=th.text2, f=None):
             nonlocal y
             img = (f or font).render(t, True, color)
             surface.blit(img, (x, y))
             y += img.get_height() + 4
 
-        text("Настройка управления", (255, 220, 90), self.app.font_big)
-        text(self.profile.name[:28], (170, 200, 255), small)
+        text(th.heading("Настройка управления"), th.accent, self.app.font_big)
+        text(self.profile.name[:28], th.status, small)
         y += 6
-        text("Перетащите на экран:", (170, 170, 180), small)
+        pygame.draw.line(surface, th.border, (x, y - 4), (x + w, y - 4))
+        y += 4
+        text("Перетащите на экран:", th.muted, small)
         for kind, name in PALETTE:
             self._button(surface, pygame.Rect(x, y, w, 27), name, lambda k=kind: self._start_palette(k))
             y += 31
@@ -445,7 +446,7 @@ class Editor:
         def stepper(caption, minus, plus):
             # "caption   [−] [+]" on one row
             nonlocal y
-            img = small.render(caption, True, (225, 225, 232))
+            img = small.render(caption, True, th.text2)
             surface.blit(img, (x, y + 6))
             bw = 40
             self._button(surface, pygame.Rect(x + w - 2 * bw - 6, y, bw, 26), "−", minus)
@@ -456,9 +457,9 @@ class Editor:
         if sel is not None and sel < len(self.profile.mappings):
             m = self.profile.mappings[sel]
             t = m["type"]
-            text("Выбрано: " + TYPE_NAMES.get(t, t), (255, 220, 90))
+            text("Выбрано: " + TYPE_NAMES.get(t, t), th.sel)
             if t == "joystick":
-                text("Клик по букве на экране — сменить", (170, 170, 180), small)
+                text("Клик по букве на экране — сменить", th.muted, small)
             else:
                 role = key_roles(m)[0][0]
                 self._button(surface, pygame.Rect(x, y, w, 26),
@@ -481,7 +482,7 @@ class Editor:
         else:
             for line in ("Клик по элементу — выбрать", "Клик по подписи — сменить клавишу",
                          "Перетаскивание — переместить", "Колесо — размер, ПКМ — удалить"):
-                text(line, (170, 170, 180), small)
+                text(line, th.muted, small)
 
         # Bottom: profile buttons above Save / Cancel, dropped if there is no room.
         by = h - 46
@@ -491,7 +492,7 @@ class Editor:
         self._button(surface, pygame.Rect(x + half + 8, by, half, 34), "Отмена",
                      lambda: self.app.toggle_editor(save=False))
         pkg = self.app.fg_package
-        rows = [("Новый профиль для этой игры", self._new_profile)]
+        rows = [("Новый профиль для игры", self._new_profile)]
         if pkg:
             on = pkg in self.profile.packages
             rows.insert(0, ("Включать в этой игре: %s" % ("да" if on else "нет"), self._toggle_package))

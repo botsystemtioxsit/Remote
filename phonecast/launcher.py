@@ -4,6 +4,7 @@ Waits for the phone with friendly instructions, starts a session, returns to
 waiting (and reconnects) when the cable is pulled, until the window is closed.
 """
 
+import math
 import os
 import sys
 import threading
@@ -16,6 +17,7 @@ os.environ.setdefault("SDL_VIDEO_WAYLAND_WMCLASS", "phonecast")
 import pygame  # noqa: E402
 
 from . import settings as settings_mod  # noqa: E402
+from . import theme  # noqa: E402
 from .adb import Adb, AdbError  # noqa: E402
 from .app import App, _font  # noqa: E402
 from .keymap import load_profiles  # noqa: E402
@@ -69,9 +71,8 @@ class Launcher:
                 pygame.display.set_icon(pygame.image.load(ICON))
             except pygame.error:
                 pass
-        self.font = _font(16)
-        self.font_title = _font(28, bold=True)
-        self.font_status = _font(19, bold=True)
+        theme.apply(self.options.get("theme"))
+        self._load_fonts()
         try:
             self.screen_long = max(pygame.display.get_desktop_sizes()[0])
         except (AttributeError, IndexError, pygame.error):
@@ -110,6 +111,16 @@ class Launcher:
         finally:
             pygame.quit()
 
+    def _load_fonts(self):
+        self.font = _font(16)
+        self.font_small = _font(14)
+        self.font_title = _font(30, bold=True)
+        self.font_status = _font(19, bold=True)
+
+    def _setting_changed(self, key, value):
+        if key == "theme":
+            self._load_fonts()
+
     # ----- waiting screen ------------------------------------------------
 
     def _wait_for_phone(self):
@@ -117,7 +128,7 @@ class Launcher:
         # closing and reopening a small one.
         screen = pygame.display.get_surface()
         if screen is None:
-            screen = pygame.display.set_mode((760, 460), pygame.RESIZABLE)
+            screen = pygame.display.set_mode((880, 580), pygame.RESIZABLE)
         pygame.display.set_caption("Phonecast")
         pygame.event.set_grab(False)
         pygame.mouse.set_visible(True)
@@ -140,7 +151,8 @@ class Launcher:
                     if self.panel.closed:
                         self.panel = None
                 elif is_chord(ev):
-                    self.panel = SettingsPanel(self.options, self.font, self.font_status)
+                    self.panel = SettingsPanel(self.options, self.font, self.font_status,
+                                               on_change=self._setting_changed)
             with self._lock:
                 result = self._result
             if result:
@@ -150,30 +162,68 @@ class Launcher:
             clock.tick(15)
 
     def _draw(self, screen):
-        screen.fill((24, 26, 32))
-        w = screen.get_width()
-        y = 36
-        title = self.font_title.render("Phonecast", True, (240, 240, 245))
-        screen.blit(title, title.get_rect(midtop=(w // 2, y)))
-        y += 58
-        hint = self.font.render("Ctrl+Alt — настройки (режим, качество, звук, подсказки)",
-                                True, (150, 150, 165))
-        screen.blit(hint, hint.get_rect(midtop=(w // 2, y)))
-        y += 44
-        if self.message:
-            img = self.font.render(self.message, True, (255, 200, 120))
-            screen.blit(img, img.get_rect(midtop=(w // 2, y)))
-            y += 32
-        dots = "." * (int(time.monotonic() * 2) % 4)
+        t = theme.T
+        theme.fill_bg(screen)
+        w, h = screen.get_size()
+        now = time.monotonic()
         with self._lock:
             status, details = self.status, list(self.details)
-        img = self.font_status.render(status + dots, True, (130, 200, 255))
-        screen.blit(img, img.get_rect(midtop=(w // 2, y)))
-        y += 48
+
+        # a phone with rings spreading from it while searching
+        y = 30
+        phone = pygame.Rect(0, 0, 40, 68)
+        phone.midtop = (w // 2, y + 14)
+        rings = pygame.Surface((160, 160), pygame.SRCALPHA)
+        for k in range(3):
+            p = (now * 0.6 + k / 3) % 1.0
+            r = int(34 + 42 * p)
+            pygame.draw.circle(rings, t.accent + (int(150 * (1 - p)),), (80, 80), r, 2)
+        screen.blit(rings, rings.get_rect(center=phone.center))
+        pygame.draw.rect(screen, t.surface, phone, border_radius=min(9, t.radius_panel))
+        pygame.draw.rect(screen, t.accent, phone, 3, border_radius=min(9, t.radius_panel))
+        pygame.draw.line(screen, t.accent, (phone.centerx - 7, phone.y + 7), (phone.centerx + 7, phone.y + 7), 3)
+        pygame.draw.circle(screen, t.accent, (phone.centerx, phone.bottom - 9), 3)
+        y = phone.bottom + 30
+
+        title = self.font_title.render(t.heading("Phonecast"), True, t.text)
+        screen.blit(title, title.get_rect(midtop=(w // 2, y)))
+        y += title.get_height() + 4
+        sub = self.font_small.render("Экран телефона на ноутбуке по USB-кабелю", True, t.muted)
+        screen.blit(sub, sub.get_rect(midtop=(w // 2, y)))
+        y += sub.get_height() + 22
+
+        if self.message:
+            img = self.font.render(self.message, True, t.warn)
+            pill = img.get_rect(midtop=(w // 2, y)).inflate(24, 10)
+            pygame.draw.rect(screen, t.warn, pill, 1, border_radius=min(t.radius, pill.h // 2))
+            screen.blit(img, img.get_rect(center=pill.center))
+            y = pill.bottom + 14
+
+        # the card: status with a spinner, then what to do
+        cw = min(w - 40, 700)
+        ch = 64 + (len(details) * 26 + 12 if details else 0)
+        card = pygame.Rect((w - cw) // 2, y, cw, ch)
+        theme.panel(screen, card)
+        sx, sy = card.x + 44, card.y + 22
+        for k in range(8):
+            a = now * 2 * math.pi * 0.8 + k * math.pi / 4
+            fade = (k + 1) / 8
+            pygame.draw.circle(screen, theme.mix(t.surface, t.status, fade),
+                               (int(card.x + 26 + 9 * math.cos(a)), int(sy + 11 + 9 * math.sin(a))), 2)
+        img = self.font_status.render(status, True, t.status)
+        screen.blit(img, (sx, sy))
+        y = sy + 42
+        if details:
+            pygame.draw.line(screen, t.border, (card.x + 20, y - 8), (card.right - 20, y - 8))
         for line in details:
-            img = self.font.render(line, True, (215, 215, 222))
-            screen.blit(img, (max(20, w // 2 - 330), y))
+            img = self.font.render(line, True, t.text2)
+            screen.blit(img, (card.x + 24, y + 4))
             y += 26
+
+        hint = self.font_small.render("Ctrl+Alt — настройки: режим, качество, звук, оформление",
+                                      True, t.muted)
+        hy = max(card.bottom + 16, h - 30)
+        screen.blit(hint, hint.get_rect(midtop=(w // 2, hy)))
         if self.panel:
             self.panel.draw(screen)
         pygame.display.flip()
