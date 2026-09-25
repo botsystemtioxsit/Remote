@@ -203,6 +203,34 @@ class SettingsPanelTest(unittest.TestCase):
         saved = settings.load()
         self.assertEqual((saved["mode"], saved["quality"]), ("watch", "high"))
 
+    def test_mouse_sensitivity_stepper(self):
+        from phonecast import settings
+        self.assertEqual(settings.load()["mouse_sensitivity"], 0.6)
+        app, _ = self.open_app()
+        app.handle_event(chord())
+        app.panel.draw(app.screen)
+        minus = [r for r, k, v in app.panel._buttons if k == "mouse_sensitivity"][0]
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=minus.center))
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=minus.center))
+        self.assertAlmostEqual(app.engine.sensitivity_scale, 0.4)     # 0.6 -> 0.5 -> 0.4, live
+        self.assertAlmostEqual(settings.load()["mouse_sensitivity"], 0.4)
+        self.assertFalse(app.panel.needs_reconnect)
+
+    def test_pc_mode_mouse_uses_sensitivity_without_losing_slow_motion(self):
+        from phonecast import control as c
+        app, s = make_app([])
+        app.engine.sensitivity_scale = 0.5
+        app.pc_mode = True
+        total = 0
+        for _ in range(10):          # ten tiny 1-count moves: 0.5 each
+            app._motion = [app._motion[0] + 1, app._motion[1]]
+            app._flush_pc_motion()
+        for m in s.sent:
+            if m[0] == c.TYPE_UHID_INPUT:
+                dx = m[6]
+                total += dx - 256 if dx > 127 else dx
+        self.assertEqual(total, 5)
+
     def test_hints_hidden_by_default_and_f4_is_remembered(self):
         from phonecast import settings
         self.assertFalse(settings.load()["show_hints"])

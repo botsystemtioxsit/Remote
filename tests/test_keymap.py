@@ -130,15 +130,46 @@ class EngineTest(unittest.TestCase):
         r.e.mouse_motion(50, 0)
         r.run(0.1)
         self.assertEqual(r.touches, [(DOWN, AIM_POINTER_ID, 0.5, 0.5), (MOVE, AIM_POINTER_ID, 0.55, 0.5)])
-        r.e.mouse_motion(80, 0)  # would exceed the radius -> lift and re-press at center
+        r.e.mouse_motion(80, 0)  # would exceed the radius -> lift, continue with another finger
         r.run(0.2)
-        self.assertEqual(r.touches[-3:], [(UP, AIM_POINTER_ID, 0.55, 0.5), (DOWN, AIM_POINTER_ID, 0.5, 0.5),
-                                         (MOVE, AIM_POINTER_ID, 0.58, 0.5)])
+        other = AIM_POINTER_ID + 1
+        self.assertEqual(r.touches[-3:], [(UP, AIM_POINTER_ID, 0.55, 0.5), (DOWN, other, 0.5, 0.5),
+                                         (MOVE, other, 0.58, 0.5)])
         r.e.key_down("`")
         self.assertFalse(r.e.aim_active)
         r.run(0.1)
         self.assertEqual(r.touches[-1][0], UP)
         r.assert_like_a_finger(self)
+
+    def test_recentering_never_slides_a_finger_back(self):
+        # The bug: same finger lifted and pressed again at the center within
+        # one game frame looked like a slide back -> the camera jerked back.
+        r = Rig([{"type": "aim", "toggle": "`", "x": 0.5, "y": 0.5, "radius": 0.1}], aspect=1.0)
+        r.e.key_down("`")
+        for _ in range(40):          # keep turning right: many recenters
+            r.e.mouse_motion(30, 0)
+            r.run(0.01)
+        r.run(0.2)
+        last_x = {}
+        for _t, a, p, x, _y in r.sent:
+            if a == DOWN:
+                last_x[p] = x
+            elif a == MOVE:
+                self.assertGreaterEqual(x, last_x[p])   # a finger only ever moves right
+                last_x[p] = x
+            elif a == UP:
+                del last_x[p]
+        self.assertGreater(sum(1 for m in r.touches if m[0] == DOWN), 3)
+        r.assert_like_a_finger(self)
+
+    def test_sensitivity_scale(self):
+        r = Rig([{"type": "aim", "toggle": "`", "x": 0.5, "y": 0.5, "radius": 0.4,
+                  "sensitivity": 1.0}], aspect=1.0)
+        r.e.sensitivity_scale = 0.5
+        r.e.key_down("`")
+        r.e.mouse_motion(100, 0)     # 100 counts * 1.0 * 0.5 / 1000
+        r.run(0.1)
+        self.assertEqual(r.touches[-1], (MOVE, AIM_POINTER_ID, 0.55, 0.5))
 
     def test_fast_mouse_motion_does_not_pile_up(self):
         r = Rig([{"type": "aim", "toggle": "`", "x": 0.5, "y": 0.5, "radius": 0.4}], aspect=1.0)

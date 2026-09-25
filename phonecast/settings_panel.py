@@ -4,11 +4,28 @@ import pygame
 
 from . import settings as settings_mod
 
-# (settings key, caption, [(value, text), ...])
+SENSITIVITY_STEPS = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0]
+
+
+class Stepper:
+    """A "−  value  +" row instead of choice buttons."""
+
+    def __init__(self, steps, fmt="%.1f"):
+        self.steps = steps
+        self.fmt = fmt
+
+    def step(self, value, direction):
+        # nearest step, then one step up or down
+        i = min(range(len(self.steps)), key=lambda k: abs(self.steps[k] - float(value)))
+        return self.steps[max(0, min(len(self.steps) - 1, i + direction))]
+
+
+# (settings key, caption, [(value, text), ...] or Stepper)
 ROWS = [
     ("mode", "Режим", [("watch", "Только трансляция"), ("control", "Трансляция + управление")]),
     ("quality", "Качество", [(q, settings_mod.PRESET_NAMES[q]) for q in settings_mod.PRESET_ORDER]),
     ("audio", "Звук с телефона", [(True, "Вкл"), (False, "Выкл")]),
+    ("mouse_sensitivity", "Чувствительность мыши в играх (обзор, ПК-режим)", Stepper(SENSITIVITY_STEPS)),
     ("show_hints", "Подсказки кнопок в игре", [(False, "Скрыты"), (True, "Показаны")]),
     ("fullscreen", "Полный экран", [(False, "Нет"), (True, "Да")]),
     ("screen_off", "Гасить экран телефона", [(False, "Нет"), (True, "Да")]),
@@ -65,6 +82,8 @@ class SettingsPanel:
                 self.closed = True
             for rect, key, value in self._buttons:
                 if rect.collidepoint(ev.pos):
+                    if callable(value):
+                        value = value()
                     self.choose(key, value)
         return True
 
@@ -90,6 +109,29 @@ class SettingsPanel:
         for key, caption, choices in ROWS:
             surface.blit(self.font.render(caption, True, (200, 200, 212)), (x, y))
             by = y + 24
+            if isinstance(choices, Stepper):
+                cur = self.options.get(key, 1.0)
+                bw = 90
+                for i, (text, direction) in enumerate((("−", -1), ("+", 1))):
+                    rect = pygame.Rect(x if i == 0 else box.right - pad - bw, by, bw, 32)
+                    color = (70, 74, 88) if rect.collidepoint(mouse) else (48, 52, 64)
+                    pygame.draw.rect(surface, color, rect, border_radius=7)
+                    img = self.font_big.render(text, True, (240, 240, 245))
+                    surface.blit(img, img.get_rect(center=rect.center))
+                    # read the value at click time: two quick clicks between redraws count twice
+                    self._buttons.append((rect, key, lambda d=direction, k=key, st=choices:
+                                          st.step(self.options.get(k, 1.0), d)))
+                # a bar showing where the value is between the smallest and largest step
+                bar = pygame.Rect(x + bw + 16, by + 12, w - 2 * pad - 2 * bw - 32, 8)
+                pygame.draw.rect(surface, (48, 52, 64), bar, border_radius=4)
+                lo, hi = choices.steps[0], choices.steps[-1]
+                fill = bar.copy()
+                fill.w = max(8, int(bar.w * (float(cur) - lo) / (hi - lo)))
+                pygame.draw.rect(surface, (40, 110, 200), fill, border_radius=4)
+                img = self.font_big.render(choices.fmt % float(cur), True, (130, 190, 255))
+                surface.blit(img, img.get_rect(topright=(box.right - pad, y - 2)))
+                y += row_h
+                continue
             bw = (w - 2 * pad - 8 * (len(choices) - 1)) // len(choices)
             bx = x
             for value, text in choices:

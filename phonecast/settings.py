@@ -32,6 +32,8 @@ DEFAULTS = {
     "mode": "control",
     # draw the key labels of the game controls over the game (F4)
     "show_hints": False,
+    # mouse sensitivity in games: camera look (times the profile's own) and PC mode
+    "mouse_sensitivity": 0.6,
     # Apps in which PC mode (real keyboard + mouse on the phone) turns on by itself
     "pc_mode_apps": ["com.mojang.minecraftpe"],
 }

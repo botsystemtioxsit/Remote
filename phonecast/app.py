@@ -61,7 +61,7 @@ def read_pc_clipboard():
 class App:
     def __init__(self, session, adb, profiles, profiles_dir, start_profile=None,
                  fullscreen=False, audio=True, screen_off=False, pc_mode_apps=(), mode="control",
-                 quality="balanced", show_hints=False):
+                 quality="balanced", show_hints=False, mouse_sensitivity=0.6):
         self.session = session
         self.adb = adb
         self.profiles = profiles
@@ -71,6 +71,7 @@ class App:
         self.screen_off_at_start = screen_off
 
         self.engine = Engine(self.touch_norm, self.press_keycode, self.aspect)
+        self.engine.sensitivity_scale = float(mouse_sensitivity)
         self.profile_index = 0
         if start_profile:
             for i, p in enumerate(profiles):
@@ -757,7 +758,8 @@ class App:
             options = settings_mod.load()
             options.update({"mode": "watch" if self.watch else "control", "quality": self.quality,
                             "audio": self.want_audio, "show_hints": self.show_hints,
-                            "fullscreen": self.fullscreen, "screen_off": not self.phone_screen_on})
+                            "fullscreen": self.fullscreen, "screen_off": not self.phone_screen_on,
+                            "mouse_sensitivity": self.engine.sensitivity_scale})
             self.panel = SettingsPanel(options, self.font, self.font_big, on_change=self._setting_changed)
             pygame.key.stop_text_input()
         else:
@@ -781,6 +783,8 @@ class App:
             self._set_mode()
         elif key == "screen_off" and value == self.phone_screen_on:
             self.toggle_phone_screen()
+        elif key == "mouse_sensitivity":
+            self.engine.sensitivity_scale = float(value)
         elif key == "quality":
             self.quality = value
         elif key == "audio":
@@ -876,7 +880,13 @@ class App:
         # far fewer messages with a high-rate gaming mouse, same total movement.
         dx, dy = self._motion
         if dx or dy:
-            self._motion = [0, 0]
+            # the user's sensitivity; fractions are kept for the next report
+            scale = self.engine.sensitivity_scale
+            fx, fy = dx * scale, dy * scale
+            dx, dy = int(fx), int(fy)
+            self._motion = [(fx - dx) / scale, (fy - dy) / scale]
+            if not (dx or dy):
+                return
             for report in self.hid_mouse.motion(dx, dy):
                 self.session.send(control.uhid_input(hid.MOUSE_ID, report))
 

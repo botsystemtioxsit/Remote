@@ -98,7 +98,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(session.initial_size, (640, 360))
         self.assertEqual(session.audio_codec, "opus")
 
-        app = App(session, a, [], profiles_dir)
+        app = App(session, a, [], profiles_dir, mouse_sensitivity=1.0)
         seen = {"rotated": False, "landscape_again": False}
 
 

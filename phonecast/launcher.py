@@ -89,7 +89,8 @@ class Launcher:
                           pc_mode_apps=self.options["pc_mode_apps"],
                           mode=self.options.get("mode", "control"),
                           quality=self.options.get("quality", "balanced"),
-                          show_hints=self.options.get("show_hints", False))
+                          show_hints=self.options.get("show_hints", False),
+                          mouse_sensitivity=self.options.get("mouse_sensitivity", 0.6))
                 try:
                     app.run()
                 finally:

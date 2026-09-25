@@ -187,6 +187,8 @@ class Engine:
         self._skills = {}      # key name -> [pointer id, mapping, current finger pos]
         self.mouse_pos = (0.5, 0.5)  # cursor position, normalized to the frame
         self.aim = None        # aim mapping of the profile, if any
+        self.sensitivity_scale = 1.0  # user's mouse sensitivity (settings), times the profile's
+        self._aim_pid = AIM_POINTER_ID
         self.aim_active = False
         self._aim_pos = None   # current finger position while aiming, None if up
 
@@ -318,31 +320,35 @@ class Engine:
             return
         m = self.aim
         aspect = self._aspect() or 1.0
-        sens = float(m.get("sensitivity", 1.0))
+        sens = float(m.get("sensitivity", 1.0)) * self.sensitivity_scale
         radius = float(m.get("radius", 0.3))
         cx, cy = m["x"], m["y"]
         if self._aim_pos is None:
             self._aim_pos = (cx, cy)
-            self._touch(control.ACTION_DOWN, AIM_POINTER_ID, cx, cy)
+            self._touch(control.ACTION_DOWN, self._aim_pid, cx, cy)
         # sensitivity 1.0: 1000 mouse counts move the finger by one frame height
         nx = self._aim_pos[0] + dx * sens / 1000.0 / aspect
         ny = self._aim_pos[1] + dy * sens / 1000.0
         dist = math.hypot((nx - cx) * aspect, ny - cy)
         if dist > radius or not (0.01 < nx < 0.99 and 0.01 < ny < 0.99):
-            # Lift the finger and put it back to the center to continue turning.
-            self._touch(control.ACTION_UP, AIM_POINTER_ID, *self._aim_pos)
-            self._touch(control.ACTION_DOWN, AIM_POINTER_ID, cx, cy)
+            # Lift the finger and continue turning with *another* finger from
+            # the center. With the same finger, a game running slower than the
+            # lift/press gap would see it slide back to the center, turning
+            # the camera back ("jerks back and forth").
+            self._touch(control.ACTION_UP, self._aim_pid, *self._aim_pos)
+            self._aim_pid = AIM_POINTER_ID + 1 if self._aim_pid == AIM_POINTER_ID else AIM_POINTER_ID
+            self._touch(control.ACTION_DOWN, self._aim_pid, cx, cy)
             nx = cx + dx * sens / 1000.0 / aspect
             ny = cy + dy * sens / 1000.0
         nx, ny = _clamp01(nx), _clamp01(ny)
         self._aim_pos = (nx, ny)
-        self._touch(control.ACTION_MOVE, AIM_POINTER_ID, nx, ny)
+        self._touch(control.ACTION_MOVE, self._aim_pid, nx, ny)
 
     def set_aim_active(self, active):
         if not self.aim:
             active = False
         if not active and self._aim_pos is not None:
-            self._touch(control.ACTION_UP, AIM_POINTER_ID, *self._aim_pos)
+            self._touch(control.ACTION_UP, self._aim_pid, *self._aim_pos)
             self._aim_pos = None
         self.aim_active = active
 
@@ -398,7 +404,7 @@ class Engine:
         self._skills = {}
         self._held.clear()
         if self._aim_pos is not None:
-            self._raw(control.ACTION_UP, AIM_POINTER_ID, *self._aim_pos)
+            self._raw(control.ACTION_UP, self._aim_pid, *self._aim_pos)
             self._aim_pos = None
         self._swipes = []
         self.set_aim_active(False)
