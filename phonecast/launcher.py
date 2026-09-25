@@ -15,6 +15,7 @@ os.environ.setdefault("SDL_VIDEO_X11_WMCLASS", "phonecast")
 os.environ.setdefault("SDL_VIDEO_WAYLAND_WMCLASS", "phonecast")
 import pygame  # noqa: E402
 
+from . import settings as settings_mod  # noqa: E402
 from .adb import Adb, AdbError  # noqa: E402
 from .app import App, _font  # noqa: E402
 from .keymap import load_profiles  # noqa: E402
@@ -80,11 +81,13 @@ class Launcher:
                           fullscreen=self.options["fullscreen"],
                           audio=self.options["audio"],
                           screen_off=self.options["screen_off"],
-                          pc_mode_apps=self.options["pc_mode_apps"])
+                          pc_mode_apps=self.options["pc_mode_apps"],
+                          mode=self.options.get("mode", "control"))
                 try:
                     app.run()
                 finally:
                     session.close()
+                self.options["mode"] = "watch" if app.watch else "control"
                 if app.quit_requested:
                     return 0
                 self.message = "Связь с телефоном потеряна."
@@ -106,6 +109,7 @@ class Launcher:
         pygame.mouse.set_visible(True)
         self._result = None
         self.status, self.details = "Ищу телефон…", []
+        self._mode_buttons = []
         self._stop = False
         threading.Thread(target=self._connect_loop, daemon=True).start()
         clock = pygame.time.Clock()
@@ -116,6 +120,10 @@ class Launcher:
                     return None, None
                 if ev.type == pygame.VIDEORESIZE:
                     screen = pygame.display.set_mode((ev.w, ev.h), pygame.RESIZABLE)
+                if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    for rect, mode in self._mode_buttons:
+                        if rect.collidepoint(ev.pos):
+                            self.set_mode(mode)
             with self._lock:
                 result = self._result
             if result:
@@ -130,7 +138,24 @@ class Launcher:
         y = 36
         title = self.font_title.render("Phonecast", True, (240, 240, 245))
         screen.blit(title, title.get_rect(midtop=(w // 2, y)))
-        y += 62
+        y += 58
+        # Mode choice: kept for the next start, switchable later in the window.
+        self._mode_buttons = []
+        mouse = pygame.mouse.get_pos()
+        bw, gap = 250, 16
+        x = w // 2 - bw - gap // 2
+        for mode, text in (("watch", "Только трансляция"), ("control", "Трансляция + управление")):
+            rect = pygame.Rect(x, y, bw, 38)
+            chosen = self.options.get("mode", "control") == mode
+            color = (40, 110, 200) if chosen else ((70, 74, 88) if rect.collidepoint(mouse) else (50, 54, 66))
+            pygame.draw.rect(screen, color, rect, border_radius=8)
+            if chosen:
+                pygame.draw.rect(screen, (150, 200, 255), rect, 2, border_radius=8)
+            img = self.font.render(text, True, (240, 240, 245))
+            screen.blit(img, img.get_rect(center=rect.center))
+            self._mode_buttons.append((rect, mode))
+            x += bw + gap
+        y += 58
         if self.message:
             img = self.font.render(self.message, True, (255, 200, 120))
             screen.blit(img, img.get_rect(midtop=(w // 2, y)))
@@ -146,6 +171,12 @@ class Launcher:
             screen.blit(img, (max(20, w // 2 - 330), y))
             y += 26
         pygame.display.flip()
+
+    def set_mode(self, mode):
+        self.options["mode"] = mode
+        saved = settings_mod.load()
+        saved["mode"] = mode
+        settings_mod.save(saved)
 
     def _set_status(self, status, details=()):
         with self._lock:

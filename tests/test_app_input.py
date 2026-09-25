@@ -29,10 +29,10 @@ class FakeDecoder:
     frame_size = (1000, 500)
 
 
-def make_app(mappings):
+def make_app(mappings, mode="control"):
     pygame.display.init()
     session = FakeSession()
-    app = App(session, None, [Profile("p", mappings)], "/nonexistent")
+    app = App(session, None, [Profile("p", mappings)], "/nonexistent", mode=mode)
     app.decoder = FakeDecoder()
     app.frame_native = (1000, 500)
     app.view = pygame.Rect(0, 0, 1000, 500)
@@ -81,6 +81,83 @@ class MouseRoutingTest(unittest.TestCase):
         app.keymap_on = False
         app.set_keymap(True)
         self.assertTrue(app.engine.aim_active)
+
+
+class KeyEv:
+    def __init__(self, type_, scancode):
+        self.type, self.scancode, self.key, self.mod = type_, scancode, 0, 0
+
+
+class WatchModeTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = tempfile.TemporaryDirectory()
+        os.environ["XDG_CONFIG_HOME"] = self.cfg.name
+
+    def tearDown(self):
+        del os.environ["XDG_CONFIG_HOME"]
+        self.cfg.cleanup()
+
+    def test_watch_mode_sends_nothing_to_the_phone(self):
+        app, s = make_app([{"type": "tap", "key": "space", "x": 0.5, "y": 0.5}], mode="watch")
+        app.keymap_on = False
+        for ev in (pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(100, 100)),
+                   pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(100, 100)),
+                   pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=3, pos=(100, 100)),
+                   pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=1),
+                   pygame.event.Event(pygame.TEXTINPUT, text="привет"),
+                   pygame.event.Event(pygame.KEYDOWN, key=0, scancode=44, mod=0),   # space
+                   pygame.event.Event(pygame.KEYDOWN, key=0, scancode=40, mod=0)):  # enter
+            app.handle_event(ev)
+        app._poll_foreground()
+        self.assertEqual(s.sent, [])
+        self.assertFalse(app.keymap_on)
+
+    def test_switching_to_control_and_back(self):
+        from phonecast import settings
+        app, s = make_app([], mode="watch")
+        app.keymap_on = False
+        app.set_watch(False)
+        self.assertEqual(settings.load()["mode"], "control")
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(100, 100)))
+        self.assertEqual(touches(s), [(0, 0, 100, 100)])   # a click is a touch again
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(100, 100)))
+        app.set_watch(True)
+        self.assertEqual(settings.load()["mode"], "watch")
+        n = len(s.sent)
+        app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(100, 100)))
+        self.assertEqual(len(s.sent), n)
+
+    def test_switching_to_watch_releases_game_controls(self):
+        app, s = make_app([{"type": "tap", "key": "space", "x": 0.5, "y": 0.5},
+                           {"type": "aim", "toggle": "`", "x": 0.5, "y": 0.5, "auto": True}])
+        app.keymap_on = False
+        app.set_keymap(True)
+        app.engine.key_down("space")
+        app.set_watch(True)
+        self.assertFalse(app.keymap_on)
+        self.assertFalse(app.engine.aim_active)
+        downs = {t[1] for t in touches(s) if t[0] == 0}
+        ups = {t[1] for t in touches(s) if t[0] == 1}
+        self.assertEqual(downs, ups)  # nothing stays pressed on the phone
+
+    def test_waiting_screen_mode_buttons(self):
+        from phonecast import settings
+        from phonecast.launcher import Launcher
+        pygame.display.init()
+        screen = pygame.display.set_mode((760, 460))
+        opts = settings.load()
+        self.assertEqual(opts["mode"], "control")
+        launcher = Launcher(opts, "/nonexistent")
+        pygame.font.init()
+        from phonecast.app import _font
+        launcher.font, launcher.font_title, launcher.font_status = _font(16), _font(28), _font(19)
+        launcher._draw(screen)
+        rect = next(r for r, mode in launcher._mode_buttons if mode == "watch")
+        pygame.event.clear()
+        launcher.set_mode("watch")
+        self.assertEqual(settings.load()["mode"], "watch")
+        self.assertEqual(launcher.options["mode"], "watch")
+        self.assertGreater(rect.w, 100)
 
 
 class SeedProfilesTest(unittest.TestCase):

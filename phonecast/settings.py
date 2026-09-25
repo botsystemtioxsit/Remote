@@ -16,6 +16,8 @@ DEFAULTS = {
     "audio": True,
     "fullscreen": False,
     "screen_off": False,     # turn the phone screen off while mirroring
+    # "control": mouse/keyboard/game controls; "watch": picture and sound only
+    "mode": "control",
     # Apps in which PC mode (real keyboard + mouse on the phone) turns on by itself
     "pc_mode_apps": ["com.mojang.minecraftpe"],
 }

@@ -13,6 +13,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
 from . import control, hid, keys  # noqa: E402
+from . import settings as settings_mod  # noqa: E402
 from .editor import PANEL_W, Editor  # noqa: E402
 from .keymap import Engine, new_profile  # noqa: E402
 from .media import AudioPlayer, VideoDecoder, find_audio_player  # noqa: E402
@@ -58,7 +59,7 @@ def read_pc_clipboard():
 
 class App:
     def __init__(self, session, adb, profiles, profiles_dir, start_profile=None,
-                 fullscreen=False, audio=True, screen_off=False, pc_mode_apps=()):
+                 fullscreen=False, audio=True, screen_off=False, pc_mode_apps=(), mode="control"):
         self.session = session
         self.adb = adb
         self.profiles = profiles
@@ -112,7 +113,9 @@ class App:
         self.panel_w = 0              # width of the editor panel while it is open
         self.menu_mode = False        # game mapping paused with Alt to use the game menus
         self._alt_alone = False
-        self._gear_rect = None
+        self._bar = []                # [(rect, action)] of the top bar shown on hover
+        # "watch": picture and sound only, nothing is sent to the phone
+        self.watch = mode == "watch"
         self.stats = {"decoded": 0, "shown": 0, "lag": 0}
         self._shown = 0
 
@@ -186,6 +189,8 @@ class App:
 
     def _update_title(self):
         mode = "игровой режим" if self.keymap_on else "обычный режим"
+        if self.watch:
+            mode = "только трансляция"
         if self.editor:
             mode = "редактор"
         if self.pc_mode:
@@ -229,8 +234,12 @@ class App:
 
         if self.screen_off_at_start:
             self.toggle_phone_screen()
-        pygame.key.start_text_input()
-        self.toast("F1 — справка по управлению", 5)
+        if self.watch:
+            pygame.key.stop_text_input()
+            self.toast("Только трансляция. Управление включается кнопкой вверху окна", 5)
+        else:
+            pygame.key.start_text_input()
+            self.toast("F1 — справка по управлению", 5)
 
         clock = pygame.time.Clock()
         last_draw = 0.0
@@ -436,13 +445,23 @@ class App:
         if parts:
             self.label(self.screen, "  ·  ".join(parts), (self.screen.get_width() // 2, 16),
                        color=(255, 230, 120))
-        # "Configure controls" button: shown while the free cursor is near the top.
-        self._gear_rect = None
+        # Top bar (mode switch, configure controls): shown while the free
+        # cursor is near the top edge of the window.
+        self._bar = []
         if not self.pc_mode and not self.grabbed and pygame.mouse.get_focused() \
                 and pygame.mouse.get_pos()[1] < 70:
-            self._gear_rect = self.label(self.screen, "⚙ Настроить управление (F3)",
-                                         (self.screen.get_width() - 120, 44),
-                                         color=(255, 255, 255), bg=(40, 110, 200, 235))
+            x = self.screen.get_width() - 12
+            buttons = [("⚙ Настроить управление (F3)", self.toggle_editor)] if not self.watch else []
+            buttons.append(("Включить управление" if self.watch else "Только трансляция",
+                            lambda: self.set_watch(not self.watch)))
+            for text, action in buttons:
+                w = self.font_small.size(text)[0] + 10
+                rect = self.label(self.screen, text, (x - w // 2, 44), color=(255, 255, 255),
+                                  bg=(40, 110, 200, 235) if action != self.toggle_editor else (60, 64, 76, 235))
+                self._bar.append((rect, action))
+                x = rect.left - 10
+            mode = "Режим: только трансляция" if self.watch else "Режим: управление"
+            self.label(self.screen, mode, (max(90, x - 90), 44), color=(200, 200, 210))
 
     def _draw_help(self):
         st = self.stats
@@ -489,6 +508,19 @@ class App:
         if ev.type == pygame.WINDOWFOCUSGAINED:
             self.focused = True
             return
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and not self.grabbed:
+            for rect, action in self._bar:
+                if rect.collidepoint(ev.pos):
+                    action()
+                    return
+        if self.watch:
+            # Only watching: nothing goes to the phone. F1 help and F11
+            # fullscreen still work.
+            if ev.type == pygame.KEYDOWN:
+                name = keys.key_name(ev.scancode, pygame.key.name(ev.key))
+                if name in ("f1", "f11"):
+                    self._hotkey(name)
+            return
         if self.pc_mode:
             self._pc_event(ev)
             return
@@ -517,10 +549,6 @@ class App:
             return
         elif ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
             self._alt_alone = False
-        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._gear_rect \
-                and self._gear_rect.collidepoint(ev.pos) and not self.grabbed:
-            self.toggle_editor()
-            return
 
         if ev.type == pygame.KEYDOWN:
             self._key_down(ev, keys.key_name(ev.scancode, pygame.key.name(ev.key)))
@@ -686,6 +714,36 @@ class App:
                 self.toast("Мышь захвачена для прицела. %s — отпустить, F2 — выключить раскладку"
                            % keys.pretty(self.engine.aim["toggle"]), 4)
 
+    # ----- watch mode ------------------------------------------------------
+
+    def set_watch(self, on, remember=True):
+        """Switch between "only watch" and "control" without reconnecting."""
+        if on == self.watch:
+            return
+        if on:
+            if self.editor:
+                self.toggle_editor(save=True)
+            if self.pc_mode:
+                self.set_pc_mode(False)
+            if self.keymap_on:
+                self.set_keymap(False)
+            self._release_everything()
+            self.menu_mode = False
+            pygame.key.stop_text_input()
+            self.watch = True
+            self.toast("Только трансляция: мышь и клавиатура на телефон не передаются", 4)
+        else:
+            self.watch = False
+            pygame.key.start_text_input()
+            self._fg_seen = None  # re-check the current app for its game controls
+            self.toast("Управление включено", 3)
+        if remember:
+            saved = settings_mod.load()
+            saved["mode"] = "watch" if on else "control"
+            settings_mod.save(saved)
+        self._update_title()
+        self.dirty = True
+
     # ----- PC mode (virtual keyboard + mouse) -----------------------------
 
     def set_pc_mode(self, on):
@@ -848,6 +906,9 @@ class App:
 
     def _watch_foreground(self):
         while self.running:
+            if self.watch:
+                time.sleep(0.5)
+                continue
             try:
                 self.fg_package = self.adb.foreground_package()
             except Exception:  # adb hiccups must never kill the app
@@ -855,6 +916,8 @@ class App:
             time.sleep(2)
 
     def _poll_foreground(self):
+        if self.watch:
+            return
         pkg = self.fg_package
         if pkg == self._fg_seen:
             return
