@@ -13,7 +13,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
 from . import control, hid, keys  # noqa: E402
-from .editor import Editor  # noqa: E402
+from .editor import PANEL_W, Editor  # noqa: E402
 from .keymap import Engine, new_profile  # noqa: E402
 from .media import AudioPlayer, VideoDecoder, find_audio_player  # noqa: E402
 
@@ -21,8 +21,9 @@ MOUSE_POINTER_ID = 0
 
 HELP_LINES = [
     "F1   — эта справка",
-    "F2   — включить / выключить раскладку (игровой режим)",
-    "F3   — редактор раскладки",
+    "Alt  — в игре: бой / меню (в меню мышь и клавиатура работают как обычно)",
+    "F2   — включить / выключить раскладку игры",
+    "F3   — настроить управление (как в BlueStacks)",
     "F4   — показать / скрыть подсказки кнопок",
     "F5   — следующий профиль раскладки",
     "F6   — недавние приложения        F7 — шторка уведомлений",
@@ -108,6 +109,10 @@ class App:
         self.focused = True
 
         self.quit_requested = False   # the user closed the window
+        self.panel_w = 0              # width of the editor panel while it is open
+        self.menu_mode = False        # game mapping paused with Alt to use the game menus
+        self._alt_alone = False
+        self._gear_rect = None
         self.stats = {"decoded": 0, "shown": 0, "lag": 0}
         self._shown = 0
 
@@ -170,6 +175,7 @@ class App:
 
     def _layout(self):
         sw, sh = self.screen.get_size()
+        sw -= self.panel_w  # the editor panel sits right of the phone picture
         fw, fh = self.frame_native if self.frame_native[0] else self.session.initial_size
         scale = min(sw / fw, sh / fh)
         w, h = int(fw * scale), int(fh * scale)
@@ -356,7 +362,7 @@ class App:
         surface.blit(img, img.get_rect(center=center))
         return r
 
-    def draw_mappings(self, surface, alpha=160, selected=None):
+    def draw_mappings(self, surface, alpha=160, selected=None, labels=True):
         if not self.profile:
             return
         overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -390,6 +396,8 @@ class App:
                 pygame.draw.circle(overlay, col, b, 7)
                 pygame.draw.circle(overlay, col, a, 16, 3)
         surface.blit(overlay, (0, 0))
+        if not labels:
+            return
         # Keys bound to the same point (e.g. Brawl Stars: LMB aimed attack and
         # Space quick attack) share one label instead of hiding each other.
         point_labels = {}
@@ -418,14 +426,24 @@ class App:
         if self.pc_mode:
             parts.append("ПК-РЕЖИМ: клавиатура и мышь подключены к телефону · F12 — выйти")
         if self.keymap_on:
-            parts.append("ИГРА" + (" · " + self.profile.name if self.profile else ""))
+            parts.append("БОЙ" + (" · " + self.profile.name if self.profile else ""))
             if self.engine.aim_active:
-                parts.append("прицел (мышь захвачена)")
+                parts.append("мышь захвачена (%s — отпустить)" % keys.pretty(self.engine.aim["toggle"]))
+            parts.append("Alt — меню")
+        elif self.menu_mode and self.profile:
+            parts.append("МЕНЮ · %s · Alt — в бой" % self.profile.name)
         if not self.phone_screen_on:
             parts.append("экран телефона выкл.")
         if parts:
             self.label(self.screen, "  ·  ".join(parts), (self.screen.get_width() // 2, 16),
                        color=(255, 230, 120))
+        # "Configure controls" button: shown while the free cursor is near the top.
+        self._gear_rect = None
+        if not self.pc_mode and not self.grabbed and pygame.mouse.get_focused() \
+                and pygame.mouse.get_pos()[1] < 70:
+            self._gear_rect = self.label(self.screen, "⚙ Настроить управление (F3)",
+                                         (self.screen.get_width() - 120, 44),
+                                         color=(255, 255, 255), bg=(40, 110, 200, 235))
 
     def _draw_help(self):
         st = self.stats
@@ -484,6 +502,26 @@ class App:
             if self.editor.handle_event(ev):
                 return
             return  # nothing reaches the phone while editing
+
+        # Left Alt pressed and released alone: battle <-> menu (like emulators).
+        # Alt+Tab, Alt+Shift... do not count.
+        if ev.type == pygame.KEYDOWN:
+            name = keys.key_name(ev.scancode, pygame.key.name(ev.key))
+            if name == "lalt" and not self.engine.handles("lalt") and (self.keymap_on or self.menu_mode):
+                self._alt_alone = True
+                return
+            self._alt_alone = False
+        elif ev.type == pygame.KEYUP and keys.key_name(ev.scancode, pygame.key.name(ev.key)) == "lalt" \
+                and self._alt_alone:
+            self._alt_alone = False
+            self.toggle_battle()
+            return
+        elif ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+            self._alt_alone = False
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self._gear_rect \
+                and self._gear_rect.collidepoint(ev.pos) and not self.grabbed:
+            self.toggle_editor()
+            return
 
         if ev.type == pygame.KEYDOWN:
             self._key_down(ev, keys.key_name(ev.scancode, pygame.key.name(ev.key)))
@@ -715,7 +753,20 @@ class App:
 
     # ----- modes ---------------------------------------------------------
 
+    def toggle_battle(self):
+        """Alt: pause the game mapping to use menus, and back."""
+        if self.keymap_on:
+            auto = self.auto_keymap
+            self.set_keymap(False)
+            self.auto_keymap = auto   # still leave the mapping off when the game is left
+            self.menu_mode = True
+            self.toast("Меню: мышь и клавиатура работают как обычно. Alt — вернуться в бой", 4)
+        elif self.profile:
+            self.set_keymap(True, auto=self.auto_keymap)
+        self._update_title()
+
     def set_keymap(self, on, auto=False):
+        self.menu_mode = False
         if on and self.pc_mode:
             self.set_pc_mode(False)
         if on and not self.profile:
@@ -728,7 +779,7 @@ class App:
             pygame.key.stop_text_input()
             if self.engine.aim and self.engine.aim.get("auto"):
                 self.engine.set_aim_active(True)  # shooters: mouse look right away
-            self.toast("Игровой режим: %s" % self.profile.name)
+            self.toast("Бой: %s. Alt — меню, F3 — настроить кнопки" % self.profile.name, 5)
         else:
             pygame.key.start_text_input()
             self.toast("Обычный режим (ввод текста)")
@@ -756,20 +807,37 @@ class App:
         self.use_profile(len(self.profiles) - 1)
         return p
 
-    def toggle_editor(self):
+    def toggle_editor(self, save=True):
         self._release_everything()
         if self.editor:
-            self.editor.close()
+            self.editor.close(save=save)
             self.editor = None
+            self._set_panel(0)
             if self.keymap_on:
                 pygame.key.stop_text_input()
-            self.toast("Раскладка сохранена")
+                if self.engine.aim and self.engine.aim.get("auto"):
+                    self.engine.set_aim_active(True)
+            else:
+                pygame.key.start_text_input()
+            self.toast("Управление сохранено" if save else "Изменения отменены")
         else:
             if not self.profile:
                 self.add_profile(self.fg_package or "Default", self.fg_package)
             self.editor = Editor(self)
             pygame.key.stop_text_input()
+            self._set_panel(PANEL_W)
         self._update_title()
+        self.dirty = True
+
+    def _set_panel(self, width):
+        """Widen the window by the editor panel (or give the room back)."""
+        delta = width - self.panel_w
+        self.panel_w = width
+        if not self.fullscreen and delta:
+            w, h = self.screen.get_size()
+            self._set_mode((max(300, w + delta), h))
+        else:
+            self._layout()
 
     def toggle_phone_screen(self):
         self.phone_screen_on = not self.phone_screen_on
@@ -809,5 +877,6 @@ class App:
                     self.use_profile(i)
                     self.set_keymap(True, auto=True)
                 return
-        if self.auto_keymap:
+        if self.auto_keymap or self.menu_mode:
             self.set_keymap(False)
+            self.auto_keymap = False

@@ -129,13 +129,43 @@ class EndToEndTest(unittest.TestCase):
             pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(0, 0)))
             key(53)            # aim off
 
-        def phase_editor():
+        def click(pos, button=1):
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=button, pos=pos))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=button, pos=pos))
+
+        def phase_editor_open():
             key(60)  # F3
-            pos = app.norm_to_window(0.1, 0.1)
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos))
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos))
-            key(20)  # q -> bind
-            key(60)  # F3 -> save & exit
+
+        def phase_editor_place():
+            # drag "Кнопка (нажатие)" from the panel onto the screen, then press Q
+            self.assertGreater(app.screen.get_width(), app.view.right + 200)  # panel beside
+            src = app.editor._buttons[0][0].center
+            dst = app.norm_to_window(0.1, 0.1)
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=src))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, pos=dst, rel=(0, 0), buttons=(1, 0, 0)))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=dst))
+            key(20)  # q
+
+        def phase_editor_rebind():
+            # click the "Space" label, press X: the tap moves from Space to X
+            rect = next(r for r, i, role in app.editor._labels
+                        if app.profile.mappings[i].get("key") == "space")
+            click(rect.center)
+            key(27)  # x
+
+        def phase_editor_save():
+            save = next(rect for rect, _a, caption in app.editor._buttons if caption == "Сохранить")
+            click(save.center)
+
+        def phase_alt_to_menu():
+            key(226)            # left Alt pressed and released alone
+            key(226, False)
+
+        def phase_menu_click():
+            self.assertFalse(app.keymap_on)
+            click(app.norm_to_window(0.3, 0.3))  # a normal touch in the game menu
+            key(226)
+            key(226, False)     # back to battle
 
         def phase_pc_on():
             key(69)  # F12 -> PC mode
@@ -160,7 +190,15 @@ class EndToEndTest(unittest.TestCase):
             (lambda: app.frame_surface is not None, phase_normal),
             (lambda: True, phase_profile),
             (lambda: app.keymap_on, phase_game),
-            (lambda: not app.engine.aim_active and app.grabbed is False, phase_editor),
+            (lambda: not app.engine.aim_active and app.grabbed is False, phase_editor_open),
+            (lambda: app.editor is not None and app.editor._buttons, phase_editor_place),
+            (lambda: any(m.get("key") == "q" for m in app.profile.mappings) and app.editor.capture is None
+             and app.editor._labels, phase_editor_rebind),
+            (lambda: any(m.get("key") == "x" for m in app.profile.mappings), phase_editor_save),
+            (lambda: app.editor is None and app.keymap_on and app.view.right >= app.screen.get_width() - 1,
+             phase_alt_to_menu),
+            (lambda: app.menu_mode, phase_menu_click),
+            (lambda: app.keymap_on, lambda: None),
             (lambda: app.editor is None, phase_pc_on),
             (lambda: app.pc_mode and app.grabbed, phase_pc_play),
             (lambda: True, phase_pc_off),
@@ -234,6 +272,11 @@ class EndToEndTest(unittest.TestCase):
 
         # Editor bound Q at (0.1, 0.1) and saved the profile
         saved = Profile.load(game.path)
+        self.assertIn({"type": "tap", "key": "x", "x": 0.5, "y": 0.5}, saved.mappings)
+        self.assertFalse(any(m.get("key") == "space" for m in saved.mappings))
+        # In menu mode (Alt) the click at (0.3, 0.3) went to the phone as a normal touch
+        self.assertTrue(any(m[1:3] == (0, 0) and abs(m[3] - 192) <= 1 and abs(m[4] - 108) <= 1
+                            for m in touches))
         q = [m for m in saved.mappings if m.get("key") == "q"]
         self.assertEqual(len(q), 1)
         self.assertAlmostEqual(q[0]["x"], 0.1, delta=0.01)
