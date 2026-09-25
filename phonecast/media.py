@@ -13,7 +13,7 @@ from .session import read_packet
 
 # If the picture lags this far behind the phone, drop what is queued and ask
 # the phone for a fresh keyframe instead of letting the delay keep growing.
-MAX_LAG_US = 250_000
+MAX_LAG_US = 150_000
 
 
 class VideoDecoder(threading.Thread):
@@ -36,6 +36,7 @@ class VideoDecoder(threading.Thread):
         self._latest = None         # newest decoded av.VideoFrame not yet shown
         self.frame_count = 0
         self.drop_count = 0         # times the decoder fell behind and resynced
+        self.lag_ms = 0             # how far behind the phone the last packet was
         self.error = None
 
     def take_frame(self):
@@ -65,6 +66,7 @@ class VideoDecoder(threading.Thread):
                 d = time.monotonic() * 1e6 - pts
                 if base is None or d < base:
                     base = d
+                self.lag_ms = int((d - base) / 1000)
                 if skipping:
                     if not key:
                         continue

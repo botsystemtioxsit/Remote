@@ -27,7 +27,8 @@ def main(argv):
     cmd = argv[0]
     if cmd == "devices":
         print("List of devices attached")
-        print("FAKE123        device usb:1-1 product:x model:Fake_Phone device:fake")
+        if not os.path.exists(os.path.join(STATE, "nodevice")):
+            print("FAKE123        device usb:1-1 product:x model:Fake_Phone device:fake")
     elif cmd == "push":
         pass
     elif cmd == "forward":
@@ -37,7 +38,10 @@ def main(argv):
     elif cmd == "shell":
         rest = " ".join(argv[1:])
         if "dumpsys window" in rest:
-            print("  mCurrentFocus=Window{1a2b u0 com.test.game/com.test.game.MainActivity}")
+            fg = "com.test.game"
+            if os.path.exists(os.path.join(STATE, "fg")):
+                fg = open(os.path.join(STATE, "fg")).read().strip()
+            print("  mCurrentFocus=Window{1a2b u0 %s/%s.MainActivity}" % (fg, fg))
         elif "app_process" in rest:
             serve("audio=true" in rest)
         elif "getprop" in rest:
@@ -66,6 +70,13 @@ def encode_frames(width, height, count, color_shift):
 
 
 def serve(with_audio):
+    counter = os.path.join(STATE, "sessions")
+    n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+    with open(counter, "w") as f:
+        f.write(str(n))
+    # Simulate a pulled cable during the first session if asked to.
+    cut_file = os.path.join(STATE, "disconnect_after")
+    cut_at = time.monotonic() + float(open(cut_file).read()) if n == 1 and os.path.exists(cut_file) else None
     for _ in range(100):
         if os.path.exists(port_file()):
             break
@@ -95,6 +106,8 @@ def serve(with_audio):
 
     def send(pkts):
         for data, key in pkts:
+            if cut_at and time.monotonic() > cut_at:
+                raise OSError("cable pulled")
             # pts in microseconds from the capture clock, like the real server
             pts = int((time.monotonic() - t0) * 1e6)
             flags = (1 << 62) if key else 0
@@ -109,6 +122,9 @@ def serve(with_audio):
         send(encode_frames(640, 360, 600, 0))     # back to landscape, keep streaming
     except OSError:
         pass
+    for sock in (video, audio, control):
+        if sock:
+            sock.close()
 
 
 def send_audio(sock):

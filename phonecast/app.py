@@ -12,7 +12,7 @@ import numpy
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
-from . import control, keys  # noqa: E402
+from . import control, hid, keys  # noqa: E402
 from .editor import Editor  # noqa: E402
 from .keymap import Engine, new_profile  # noqa: E402
 from .media import AudioPlayer, VideoDecoder, find_audio_player  # noqa: E402
@@ -27,7 +27,8 @@ HELP_LINES = [
     "F5   — следующий профиль раскладки",
     "F6   — недавние приложения        F7 — шторка уведомлений",
     "F8 / F9 — громкость − / +          F10 — экран телефона вкл/выкл",
-    "F11  — полный экран               F12 — повернуть экран",
+    "F11  — полный экран",
+    "F12  — ПК-режим: телефон видит клавиатуру и мышь (Minecraft и др.)",
     "ЛКМ — касание, ПКМ — «Назад», СКМ — «Домой», колесо — прокрутка",
     "Ctrl+V — вставить текст из буфера обмена ПК",
     "В режиме прицела мышь захвачена: клавиша прицела отпускает её",
@@ -56,7 +57,7 @@ def read_pc_clipboard():
 
 class App:
     def __init__(self, session, adb, profiles, profiles_dir, start_profile=None,
-                 fullscreen=False, audio=True, screen_off=False):
+                 fullscreen=False, audio=True, screen_off=False, pc_mode_apps=()):
         self.session = session
         self.adb = adb
         self.profiles = profiles
@@ -96,6 +97,20 @@ class App:
 
         self.fg_package = None
         self._fg_seen = None
+
+        # PC mode: virtual USB keyboard + mouse on the phone (see hid.py)
+        self.pc_mode = False
+        self.pc_mode_apps = set(pc_mode_apps)  # apps that switch PC mode on by themselves
+        self.auto_pc_mode = False
+        self.hid_keyboard = hid.Keyboard()
+        self.hid_mouse = hid.Mouse()
+        self._motion = [0, 0]   # mouse motion accumulated during one loop iteration
+        self.focused = True
+
+        self.quit_requested = False   # the user closed the window
+        self.lower_quality = False    # too slow: reconnect with a smaller video
+        self.stats = {"decoded": 0, "shown": 0, "lag": 0}
+        self._shown = 0
 
     # ----- helpers used by the key mapping engine ------------------------
 
@@ -168,6 +183,8 @@ class App:
         mode = "игровой режим" if self.keymap_on else "обычный режим"
         if self.editor:
             mode = "редактор"
+        if self.pc_mode:
+            mode = "ПК-режим"
         prof = " · " + self.profile.name if self.profile else ""
         pygame.display.set_caption("Phonecast — %s — %s%s" % (self.session.device_name, mode, prof))
 
@@ -176,8 +193,11 @@ class App:
     def run(self):
         pygame.init()
         pygame.key.set_repeat()  # no auto-repeat: games need clean down/up pairs
-        info = pygame.display.Info()
-        self.desktop_size = (info.current_w or 1280, info.current_h or 720)
+        try:
+            self.desktop_size = pygame.display.get_desktop_sizes()[0]
+        except (AttributeError, IndexError, pygame.error):
+            info = pygame.display.Info()
+            self.desktop_size = (info.current_w or 1280, info.current_h or 720)
         self.font = _font(16)
         self.font_small = _font(13, bold=True)
         self.font_big = _font(18, bold=True)
@@ -209,11 +229,19 @@ class App:
 
         clock = pygame.time.Clock()
         last_draw = 0.0
+        stats_t, stats_frames = time.monotonic(), 0
         try:
             while self.running:
                 events = pygame.event.get()
                 for event in events:
                     self.handle_event(event)
+                self._flush_pc_motion()
+                if time.monotonic() - stats_t >= 1.0:
+                    self.stats = {"decoded": self.decoder.frame_count - stats_frames,
+                                  "shown": self._shown, "lag": self.decoder.lag_ms}
+                    stats_t, stats_frames, self._shown = time.monotonic(), self.decoder.frame_count, 0
+                    if self.show_help:
+                        self.dirty = True
                 self._poll_foreground()
                 self.engine.update()
                 self._sync_grab()
@@ -226,13 +254,18 @@ class App:
                     self._draw()
                     last_draw = now
                     self.dirty = False
+                    if new_frame:
+                        self._shown += 1
                 clock.tick(250)
         finally:
             self.engine.release_all()
+            if self.pc_mode:
+                self.set_pc_mode(False)
             if not self.phone_screen_on:
                 self.session.send(control.set_display_power(True))
-                time.sleep(0.1)
-            pygame.quit()
+            time.sleep(0.1)
+            pygame.event.set_grab(False)
+            pygame.mouse.set_visible(True)
 
     def _request_keyframe(self):
         # Called from the decoder thread when it fell behind the stream.
@@ -245,8 +278,11 @@ class App:
             now = time.monotonic()
             self._drop_times = [t for t in getattr(self, "_drop_times", []) if now - t < 30] + [now]
             if len(self._drop_times) >= 3:
+                # Repeatedly too slow: reconnect with a smaller video (the
+                # launcher lowers the resolution and remembers it).
                 self._drop_times = []
-                self.toast("Компьютер не успевает за видео. Попробуйте: ./run.sh -m 1024 --max-fps 30", 8)
+                self.lower_quality = True
+                self.running = False
 
     def _on_device_gone(self):
         self.device_gone = True
@@ -370,6 +406,8 @@ class App:
         parts = []
         if self.editor:
             return
+        if self.pc_mode:
+            parts.append("ПК-РЕЖИМ: клавиатура и мышь подключены к телефону · F12 — выйти")
         if self.keymap_on:
             parts.append("ИГРА" + (" · " + self.profile.name if self.profile else ""))
             if self.engine.aim_active:
@@ -381,7 +419,13 @@ class App:
                        color=(255, 230, 120))
 
     def _draw_help(self):
-        lines = HELP_LINES
+        st = self.stats
+        w, h = self.frame_native
+        lines = HELP_LINES + [
+            "",
+            "Видео %dx%d · принято %d к/с · показано %d к/с · отставание %d мс"
+            % (w, h, st["decoded"], st["shown"], st["lag"]),
+        ]
         w = max(self.font.size(line)[0] for line in lines) + 40
         h = len(lines) * 24 + 30
         box = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -402,6 +446,7 @@ class App:
 
     def handle_event(self, ev):
         if ev.type == pygame.QUIT:
+            self.quit_requested = True
             self.running = False
             return
         if ev.type == pygame.VIDEORESIZE and not self.fullscreen:
@@ -412,7 +457,14 @@ class App:
             self._layout()
             return
         if ev.type == pygame.WINDOWFOCUSLOST:
+            self.focused = False
             self._release_everything()
+            return
+        if ev.type == pygame.WINDOWFOCUSGAINED:
+            self.focused = True
+            return
+        if self.pc_mode:
+            self._pc_event(ev)
             return
 
         if ev.type == pygame.KEYDOWN:
@@ -474,7 +526,7 @@ class App:
             self.fullscreen = not self.fullscreen
             self._set_mode()
         elif name == "f12":
-            self.session.send(control.rotate_device())
+            self.set_pc_mode(not self.pc_mode)
         else:
             return False
         return True
@@ -559,6 +611,11 @@ class App:
 
     def _release_everything(self):
         self.engine.release_all()
+        self._motion = [0, 0]
+        for report in (self.hid_keyboard.release_all(), self.hid_mouse.release_all()):
+            if report and self.pc_mode:
+                self.session.send(control.uhid_input(
+                    hid.KEYBOARD_ID if len(report) == 8 else hid.MOUSE_ID, report))
         if self.mouse_down:
             self.mouse_down = False
             self._send_mouse_touch(control.ACTION_UP, pygame.mouse.get_pos())
@@ -566,19 +623,85 @@ class App:
             self._key_up(name)
 
     def _sync_grab(self):
-        want = self.engine.aim_active
+        want = self.engine.aim_active or (self.pc_mode and self.focused)
         if want != self.grabbed:
             self.grabbed = want
             pygame.event.set_grab(want)
             pygame.mouse.set_visible(not want)
             pygame.mouse.get_rel()
-            if want:
+            if want and self.engine.aim_active:
                 self.toast("Мышь захвачена для прицела. %s — отпустить, F2 — выключить раскладку"
                            % keys.pretty(self.engine.aim["toggle"]), 4)
+
+    # ----- PC mode (virtual keyboard + mouse) -----------------------------
+
+    def set_pc_mode(self, on):
+        self.auto_pc_mode = False
+        if on == self.pc_mode:
+            return
+        if on:
+            if self.editor:
+                self.toggle_editor()
+            if self.keymap_on:
+                self.set_keymap(False)
+            self._release_everything()
+            pygame.key.stop_text_input()
+            self.session.send(control.uhid_create(hid.KEYBOARD_ID, hid.KEYBOARD_REPORT_DESC,
+                                                  "Phonecast Keyboard"))
+            self.session.send(control.uhid_create(hid.MOUSE_ID, hid.MOUSE_REPORT_DESC,
+                                                  "Phonecast Mouse"))
+            self.pc_mode = True
+            self.toast("ПК-режим: телефон видит клавиатуру и мышь. F12 — выйти", 5)
+        else:
+            self._release_everything()
+            self.session.send(control.uhid_destroy(hid.KEYBOARD_ID))
+            self.session.send(control.uhid_destroy(hid.MOUSE_ID))
+            self.pc_mode = False
+            pygame.key.start_text_input()
+            self.toast("ПК-режим выключен")
+        self._update_title()
+        self.dirty = True
+
+    def _pc_event(self, ev):
+        if ev.type in (pygame.KEYDOWN, pygame.KEYUP):
+            name = keys.key_name(ev.scancode, pygame.key.name(ev.key))
+            if ev.type == pygame.KEYDOWN and name in ("f11", "f12"):
+                # the only keys kept by the program; all others go to the phone
+                self._hotkey(name)
+                return
+            report = (self.hid_keyboard.press(ev.scancode) if ev.type == pygame.KEYDOWN
+                      else self.hid_keyboard.release(ev.scancode))
+            if report:
+                self.session.send(control.uhid_input(hid.KEYBOARD_ID, report))
+        elif ev.type == pygame.MOUSEMOTION:
+            if self.grabbed:
+                self._motion[0] += ev.rel[0]
+                self._motion[1] += ev.rel[1]
+        elif ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            self._flush_pc_motion()
+            report = self.hid_mouse.button(ev.button, ev.type == pygame.MOUSEBUTTONDOWN)
+            if report:
+                self.session.send(control.uhid_input(hid.MOUSE_ID, report))
+        elif ev.type == pygame.MOUSEWHEEL:
+            self._flush_pc_motion()
+            report = self.hid_mouse.wheel(ev.y, ev.x)
+            if report:
+                self.session.send(control.uhid_input(hid.MOUSE_ID, report))
+
+    def _flush_pc_motion(self):
+        # Motion is sent once per loop iteration instead of once per OS event:
+        # far fewer messages with a high-rate gaming mouse, same total movement.
+        dx, dy = self._motion
+        if dx or dy:
+            self._motion = [0, 0]
+            for report in self.hid_mouse.motion(dx, dy):
+                self.session.send(control.uhid_input(hid.MOUSE_ID, report))
 
     # ----- modes ---------------------------------------------------------
 
     def set_keymap(self, on, auto=False):
+        if on and self.pc_mode:
+            self.set_pc_mode(False)
         if on and not self.profile:
             self.toast("Нет профиля раскладки — создайте его в редакторе (F3)")
             return
@@ -652,6 +775,15 @@ class App:
             return
         self._fg_seen = pkg
         if self.editor or not pkg:
+            return
+        if pkg in self.pc_mode_apps:
+            if not self.pc_mode:
+                self.set_pc_mode(True)
+                self.auto_pc_mode = True
+            return
+        if self.auto_pc_mode:
+            self.set_pc_mode(False)
+        if self.pc_mode:
             return
         for i, p in enumerate(self.profiles):
             if pkg in p.packages:

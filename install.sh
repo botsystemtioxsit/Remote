@@ -35,5 +35,25 @@ if ! command -v wl-paste >/dev/null && ! command -v xclip >/dev/null && ! comman
     echo "Подсказка: установите wl-clipboard (Wayland) или xclip (X11), чтобы работал Ctrl+V."
 fi
 
+# Menu entry: on a Chromebook it appears in the launcher (folder "Linux apps"),
+# on a regular Linux desktop in the applications menu.
+DIR="$(pwd)"
+APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$APPS"
+cat > "$APPS/phonecast.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Phonecast
+Comment=Экран телефона на компьютере: управление мышью и клавиатурой, игры
+Exec="$DIR/run.sh"
+Icon=$DIR/phonecast/icon.png
+Terminal=false
+Categories=Game;Utility;
+StartupWMClass=phonecast
+DESKTOP
+chmod +x "$APPS/phonecast.desktop"
+command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
+
 echo
-echo "Готово. Подключите телефон кабелем и запустите: ./phonecast"
+echo "Готово. Phonecast появился в меню приложений (на Chromebook — в папке «Приложения Linux»)."
+echo "Из терминала можно запустить так: ./run.sh"

@@ -38,7 +38,20 @@ def parse_control(data):
             (n,) = struct.unpack(">I", data[i + 10:i + 14])
             msgs.append(("clipboard", data[i + 14:i + 14 + n].decode()))
             i += 14 + n
-        elif t in (5, 6, 7, 11, 17):
+        elif t == 12:
+            hid_id, _v, _p, n = struct.unpack(">HHHB", data[i + 1:i + 8])
+            name = data[i + 8:i + 8 + n].decode()
+            (dl,) = struct.unpack(">H", data[i + 8 + n:i + 10 + n])
+            msgs.append(("uhid_create", hid_id, name, dl))
+            i += 10 + n + dl
+        elif t == 13:
+            hid_id, n = struct.unpack(">HH", data[i + 1:i + 5])
+            msgs.append(("uhid_input", hid_id, data[i + 5:i + 5 + n]))
+            i += 5 + n
+        elif t == 14:
+            msgs.append(("uhid_destroy", struct.unpack(">H", data[i + 1:i + 3])[0]))
+            i += 3
+        elif t in (5, 6, 7, 11, 15, 17):
             msgs.append(("msg%d" % t,))
             i += 1
         else:
@@ -87,7 +100,7 @@ class EndToEndTest(unittest.TestCase):
 
         app = App(session, a, [], profiles_dir)
         seen = {"rotated": False, "landscape_again": False}
-        steps = []
+
 
         def key(sc, down=True):
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN if down else pygame.KEYUP,
@@ -124,12 +137,34 @@ class EndToEndTest(unittest.TestCase):
             key(20)  # q -> bind
             key(60)  # F3 -> save & exit
 
+        def phase_pc_on():
+            key(69)  # F12 -> PC mode
+
+        def phase_pc_play():
+            key(26)            # w (HID usage 0x1a)
+            key(225)           # left shift
+            key(26, False)
+            key(225, False)
+            pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, pos=(0, 0), rel=(200, -3), buttons=(0, 0, 0)))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0)))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=(0, 0)))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1, flipped=False))
+            key(58)            # F1 must go to the phone in PC mode, not show our help
+            key(58, False)
+
+        def phase_pc_off():
+            self.assertFalse(app.show_help)
+            key(69)  # F12 -> back
+
         steps = [
             (lambda: app.frame_surface is not None, phase_normal),
             (lambda: True, phase_profile),
             (lambda: app.keymap_on, phase_game),
             (lambda: not app.engine.aim_active and app.grabbed is False, phase_editor),
-            (lambda: seen["landscape_again"] and app.editor is None, lambda: setattr(app, "running", False)),
+            (lambda: app.editor is None, phase_pc_on),
+            (lambda: app.pc_mode and app.grabbed, phase_pc_play),
+            (lambda: True, phase_pc_off),
+            (lambda: seen["landscape_again"] and not app.pc_mode, lambda: setattr(app, "running", False)),
         ]
         deadline = time.monotonic() + 30
         orig_poll = app._poll_foreground
@@ -181,6 +216,21 @@ class EndToEndTest(unittest.TestCase):
         down = {m[2] for m in touches if m[1] == 0}
         up = {m[2] for m in touches if m[1] == 1}
         self.assertEqual(down, up)
+
+        # PC mode: virtual keyboard + mouse created, used, destroyed
+        self.assertIn(("uhid_create", 1, "Phonecast Keyboard", 63), msgs)
+        self.assertIn(("uhid_create", 2, "Phonecast Mouse", 67), msgs)
+        hid_in = [(m[1], m[2]) for m in msgs if m[0] == "uhid_input"]
+        kb = [d for i, d in hid_in if i == 1]
+        mouse = [d for i, d in hid_in if i == 2]
+        self.assertEqual(kb[:4], [bytes([0, 0, 0x1a, 0, 0, 0, 0, 0]), bytes([2, 0, 0x1a, 0, 0, 0, 0, 0]),
+                                  bytes([2, 0, 0, 0, 0, 0, 0, 0]), bytes(8)])
+        self.assertIn(bytes([0, 0, 0x3a, 0, 0, 0, 0, 0]), kb)  # F1 went to the phone
+        self.assertEqual(mouse[0], bytes([0, 127, 0xFD, 0, 0]))  # 200 px split: 127 + 73
+        self.assertEqual(mouse[1], bytes([0, 73, 0, 0, 0]))
+        self.assertIn(bytes([1, 0, 0, 0, 0]), mouse)            # left button down
+        self.assertIn(bytes([0, 0, 0, 0xFF, 0]), mouse)         # wheel -1
+        self.assertEqual([m for m in msgs if m[0] == "uhid_destroy"], [("uhid_destroy", 1), ("uhid_destroy", 2)])
 
         # Editor bound Q at (0.1, 0.1) and saved the profile
         saved = Profile.load(game.path)

@@ -19,6 +19,10 @@ TYPE_GET_CLIPBOARD = 8
 TYPE_SET_CLIPBOARD = 9
 TYPE_SET_DISPLAY_POWER = 10
 TYPE_ROTATE_DEVICE = 11
+TYPE_UHID_CREATE = 12
+TYPE_UHID_INPUT = 13
+TYPE_UHID_DESTROY = 14
+TYPE_OPEN_HARD_KEYBOARD_SETTINGS = 15
 TYPE_START_APP = 16
 TYPE_RESET_VIDEO = 17
 
@@ -129,3 +133,22 @@ def start_app(name):
 
 def reset_video():
     return struct.pack(">B", TYPE_RESET_VIDEO)
+
+
+def uhid_create(hid_id, report_desc, name="", vendor_id=0, product_id=0):
+    """Create a virtual HID device (keyboard, mouse...) on the phone."""
+    name_bytes = _truncate_utf8(name, 127)
+    return (struct.pack(">BHHHB", TYPE_UHID_CREATE, hid_id, vendor_id, product_id, len(name_bytes))
+            + name_bytes + struct.pack(">H", len(report_desc)) + bytes(report_desc))
+
+
+def uhid_input(hid_id, data):
+    return struct.pack(">BHH", TYPE_UHID_INPUT, hid_id, len(data)) + bytes(data)
+
+
+def uhid_destroy(hid_id):
+    return struct.pack(">BH", TYPE_UHID_DESTROY, hid_id)
+
+
+def open_hard_keyboard_settings():
+    return struct.pack(">B", TYPE_OPEN_HARD_KEYBOARD_SETTINGS)

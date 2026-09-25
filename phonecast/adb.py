@@ -49,11 +49,36 @@ class Adb:
         for line in out.splitlines()[1:]:
             parts = line.split()
             if len(parts) >= 2:
+                state = parts[1]
+                if line.split(None, 1)[1].startswith("no permissions"):
+                    state = "no permissions"
                 desc = " ".join(p for p in parts[2:] if p.startswith(("model:", "device:")))
-                result.append((parts[0], parts[1], desc))
+                result.append((parts[0], state, desc))
         return result
 
-    def select_device(self):
+    def restart_server_as_root(self):
+        """Restart the adb server with root rights if sudo needs no password.
+
+        Needed when the user may not open USB devices (common in the Linux
+        container of Chromebooks, where udev rules do not apply). Clients,
+        including this program, keep running as the normal user.
+        Returns True if the restart was done.
+        """
+        if not shutil.which("sudo"):
+            return False
+        try:
+            if subprocess.run(["sudo", "-n", "true"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=5).returncode != 0:
+                return False
+            subprocess.run([self.adb, "kill-server"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10)
+            subprocess.run(["sudo", "-n", self.adb, "start-server"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return True
+
+    def select_device(self, pick_first=False):
         """Pick the device to use, preferring USB-connected ones."""
         if self.serial:
             return self.serial
@@ -72,7 +97,7 @@ class Adb:
                 "  3. `adb devices` lists the phone.")
         usb = [d for d in ready if ":" not in d[0]]  # tcpip devices look like ip:port
         candidates = usb or ready
-        if len(candidates) > 1:
+        if len(candidates) > 1 and not pick_first:
             names = "\n".join("  %s  %s" % (d[0], d[2]) for d in candidates)
             raise AdbError("Several devices connected, pick one with -s SERIAL:\n" + names)
         self.serial = candidates[0][0]
