@@ -1,0 +1,21 @@
+{
+  "name": "Шутер (пример)",
+  "packages": [],
+  "mappings": [
+    {"type": "joystick", "x": 0.16, "y": 0.72, "radius": 0.13,
+     "up": "w", "left": "a", "down": "s", "right": "d", "walk": "lshift"},
+    {"type": "aim", "toggle": "`", "x": 0.68, "y": 0.45, "radius": 0.3, "sensitivity": 1.0},
+    {"type": "tap", "key": "mouse_left", "x": 0.86, "y": 0.62},
+    {"type": "tap", "key": "mouse_right", "x": 0.93, "y": 0.42},
+    {"type": "tap", "key": "space", "x": 0.93, "y": 0.78},
+    {"type": "tap", "key": "c", "x": 0.86, "y": 0.9},
+    {"type": "tap", "key": "r", "x": 0.78, "y": 0.9},
+    {"type": "tap", "key": "g", "x": 0.72, "y": 0.8},
+    {"type": "tap", "key": "1", "x": 0.42, "y": 0.9},
+    {"type": "tap", "key": "2", "x": 0.58, "y": 0.9},
+    {"type": "tap", "key": "tab", "x": 0.06, "y": 0.1},
+    {"type": "tap", "key": "m", "x": 0.9, "y": 0.1},
+    {"type": "swipe", "key": "e", "from": [0.5, 0.6], "to": [0.5, 0.3], "duration": 150},
+    {"type": "android", "key": "escape", "action": "back"}
+  ]
+}

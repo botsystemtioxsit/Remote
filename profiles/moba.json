@@ -1,0 +1,15 @@
+{
+  "name": "MOBA (пример)",
+  "packages": [],
+  "mappings": [
+    {"type": "joystick", "x": 0.14, "y": 0.75, "radius": 0.14,
+     "up": "w", "left": "a", "down": "s", "right": "d"},
+    {"type": "tap", "key": "space", "x": 0.88, "y": 0.8},
+    {"type": "tap", "key": "q", "x": 0.72, "y": 0.86},
+    {"type": "tap", "key": "e", "x": 0.75, "y": 0.68},
+    {"type": "tap", "key": "r", "x": 0.83, "y": 0.58},
+    {"type": "tap", "key": "f", "x": 0.62, "y": 0.9},
+    {"type": "tap", "key": "b", "x": 0.52, "y": 0.9},
+    {"type": "android", "key": "escape", "action": "back"}
+  ]
+}
