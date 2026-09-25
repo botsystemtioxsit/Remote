@@ -358,7 +358,7 @@ class Editor:
         surface.blit(shade, self.app.view.topleft)
         hover = self.hit(pygame.mouse.get_pos())
         self.app.draw_mappings(surface, alpha=230, selected=self.selected if hover is None else hover,
-                               labels=False)
+                               labels=False, areas=True)
         self._draw_labels(surface)
         if self.drag and self.drag["kind"] == "palette" and "pos" in self.drag:
             pygame.draw.circle(surface, (255, 210, 0), self.drag["pos"], 22, 3)

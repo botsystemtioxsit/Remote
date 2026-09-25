@@ -80,6 +80,42 @@ class MouseRoutingTest(unittest.TestCase):
 
 
 class SeedProfilesTest(unittest.TestCase):
+    def test_updated_bundled_profile_replaces_only_untouched_copies(self):
+        with tempfile.TemporaryDirectory() as bundled, tempfile.TemporaryDirectory() as user:
+            orig = cli.bundled_profiles_dir
+            cli.bundled_profiles_dir = lambda: bundled
+            try:
+                for name in ("game.json", "other.json"):
+                    open(os.path.join(bundled, name), "w").write('{"v": 1}')
+                cli.seed_profiles(user)
+                open(os.path.join(user, "other.json"), "w").write('{"moved": 1}')  # user edit
+                for name in ("game.json", "other.json"):
+                    open(os.path.join(bundled, name), "w").write('{"v": 2}')    # update
+                cli.seed_profiles(user)
+                self.assertEqual(open(os.path.join(user, "game.json")).read(), '{"v": 2}')
+                self.assertEqual(open(os.path.join(user, "other.json")).read(), '{"moved": 1}')
+                cli.seed_profiles(user)  # stable on the next start
+                self.assertEqual(open(os.path.join(user, "other.json")).read(), '{"moved": 1}')
+            finally:
+                cli.bundled_profiles_dir = orig
+
+    def test_old_install_gets_fixed_standoff_profile(self):
+        # Installed by the previous version: names-only record, v1 file unchanged.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import subprocess
+        try:
+            v1 = subprocess.run(["git", "-C", repo, "show", "63f6171:profiles/standoff2.json"],
+                                capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git history not available")
+        with tempfile.TemporaryDirectory() as user:
+            open(os.path.join(user, "standoff2.json"), "wb").write(v1)
+            open(os.path.join(user, ".bundled"), "w").write("standoff2.json\n")
+            cli.seed_profiles(user)
+            data = open(os.path.join(user, "standoff2.json")).read()
+            self.assertIn('"x": 0.776', data)  # the calibrated fire button
+
+
     def test_new_bundled_profiles_arrive_deleted_ones_stay_deleted(self):
         with tempfile.TemporaryDirectory() as bundled, tempfile.TemporaryDirectory() as home:
             user = os.path.join(home, "profiles")

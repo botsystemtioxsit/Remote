@@ -1,6 +1,7 @@
 """phonecast — mirror and control an Android phone over USB, with key mapping for games."""
 
 import argparse
+import hashlib
 import os
 import shutil
 import sys
@@ -13,32 +14,63 @@ def bundled_profiles_dir():
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "profiles")
 
 
-def seed_profiles(directory):
-    """Copy the profiles shipped with the program that the user has not got yet.
+# sha256 of bundled profiles shipped by earlier versions without a recorded
+# hash: a user file identical to one of them was never edited, so it may be
+# replaced by the new version.
+PREVIOUS_BUNDLED_SHA256 = {
+    "98c1c13cf3f9906e8d0574cb4099d820cfa1ad2ca55b0dff31b1213f6395a2f6",  # standoff2.json v1
+    "e6a21124e1159b950dbd09b94c5a3a916d3ec8deb98bbd7bfdd2dcead9f00822",  # brawlstars.json v1
+}
 
-    Each bundled profile is copied once (remembered in .bundled), so profiles
-    added by an update appear, while ones the user deleted stay deleted and
-    ones the user edited are never overwritten.
+
+def _sha256(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def seed_profiles(directory):
+    """Bring the profiles shipped with the program into the user's folder.
+
+    - a new bundled profile is copied once;
+    - an updated bundled profile replaces the user's copy only if the user
+      never changed that copy;
+    - profiles the user deleted stay deleted, edited ones are never touched.
+    The record (.bundled) holds "file sha256" of what was delivered.
     """
     os.makedirs(directory, exist_ok=True)
     src = bundled_profiles_dir()
     if not os.path.isdir(src):
         return
-    record = os.path.join(directory, ".bundled")
+    record_path = os.path.join(directory, ".bundled")
+    record = {}
     try:
-        with open(record, encoding="utf-8") as f:
-            done = set(f.read().split())
+        with open(record_path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if parts:
+                    record[parts[0]] = parts[1] if len(parts) > 1 else None
     except FileNotFoundError:
         # Earlier versions copied the examples without a record.
-        done = {f for f in os.listdir(directory) if f.endswith(".json")}
+        record = {f: None for f in os.listdir(directory) if f.endswith(".json")}
     for fname in sorted(os.listdir(src)):
-        if fname.endswith(".json") and fname not in done:
-            dest = os.path.join(directory, fname)
+        if not fname.endswith(".json"):
+            continue
+        bundled = os.path.join(src, fname)
+        new_sha = _sha256(bundled)
+        dest = os.path.join(directory, fname)
+        if fname not in record:
             if not os.path.exists(dest):
-                shutil.copy(os.path.join(src, fname), dest)
-            done.add(fname)
-    with open(record, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(done)) + "\n")
+                shutil.copy(bundled, dest)
+            record[fname] = new_sha
+        elif record[fname] != new_sha and os.path.exists(dest):
+            delivered = record[fname]
+            user_sha = _sha256(dest)
+            if user_sha == delivered or (delivered is None and user_sha in PREVIOUS_BUNDLED_SHA256):
+                shutil.copy(bundled, dest)  # untouched copy: take the new version
+                record[fname] = new_sha
+    with open(record_path, "w", encoding="utf-8") as f:
+        for fname in sorted(record):
+            f.write(("%s %s\n" % (fname, record[fname])) if record[fname] else fname + "\n")
 
 
 def main(argv=None):

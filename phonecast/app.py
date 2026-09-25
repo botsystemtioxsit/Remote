@@ -362,7 +362,9 @@ class App:
         surface.blit(img, img.get_rect(center=center))
         return r
 
-    def draw_mappings(self, surface, alpha=160, selected=None, labels=True):
+    def draw_mappings(self, surface, alpha=160, selected=None, labels=True, areas=False):
+        """Draw the profile's controls. `areas`: also the big mouse-look zone
+        (only useful while editing; in battle it would cover the game)."""
         if not self.profile:
             return
         overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -378,7 +380,7 @@ class App:
                 r = int(float(m.get("radius", 0.12)) * fh)
                 pygame.draw.circle(overlay, col, c, max(r, 10), 3)
                 pygame.draw.circle(overlay, col, c, 6)
-            elif t == "aim":
+            elif t == "aim" and areas:
                 c = self.norm_to_window(m["x"], m["y"])
                 r = int(float(m.get("radius", 0.3)) * fh)
                 pygame.draw.circle(overlay, col[:3] + (alpha // 2,), c, max(r, 10), 2)
@@ -415,9 +417,6 @@ class App:
                 r = int(float(m.get("radius", 0.12)) * fh)
                 for d, (ox, oy) in (("up", (0, -1)), ("down", (0, 1)), ("left", (-1, 0)), ("right", (1, 0))):
                     self.label(surface, keys.pretty(m[d]), (cx + ox * r, cy + oy * r))
-            elif t == "aim":
-                cx, cy = self.norm_to_window(m["x"], m["y"])
-                self.label(surface, "прицел: " + keys.pretty(m["toggle"]), (cx, cy + 30))
 
     def _draw_status(self):
         parts = []
