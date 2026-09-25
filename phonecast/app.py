@@ -7,6 +7,8 @@ import sys
 import threading
 import time
 
+import numpy
+
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
@@ -82,6 +84,9 @@ class App:
         self.running = True
         self.device_gone = False
         self.frame_surface = None
+        self._scaled = None
+        self._hints_cache = None
+        self.dirty = True
         self.frame_native = (0, 0)
         self.view = pygame.Rect(0, 0, 0, 0)
         self.mouse_down = False
@@ -155,7 +160,9 @@ class App:
         scale = min(sw / fw, sh / fh)
         w, h = int(fw * scale), int(fh * scale)
         self.view = pygame.Rect((sw - w) // 2, (sh - h) // 2, w, h)
-        self.decoder.target_size = (w, h)
+        self._scaled = None
+        self._hints_cache = None
+        self.dirty = True
 
     def _update_title(self):
         mode = "игровой режим" if self.keymap_on else "обычный режим"
@@ -175,7 +182,8 @@ class App:
         self.font_small = _font(13, bold=True)
         self.font_big = _font(18, bold=True)
 
-        self.decoder = VideoDecoder(self.session.video_sock, on_eof=self._on_device_gone)
+        self.decoder = VideoDecoder(self.session.video_sock, on_eof=self._on_device_gone,
+                                    request_keyframe=self._request_keyframe)
         self.frame_native = self.session.initial_size
         self.window_size = self._fit_window_size(*self.frame_native)
         self._set_mode()
@@ -200,15 +208,25 @@ class App:
         self.toast("F1 — справка по управлению", 5)
 
         clock = pygame.time.Clock()
+        last_draw = 0.0
         try:
             while self.running:
-                for event in pygame.event.get():
+                events = pygame.event.get()
+                for event in events:
                     self.handle_event(event)
                 self._poll_foreground()
                 self.engine.update()
                 self._sync_grab()
-                self._draw()
-                clock.tick(240)
+                self._check_lag()
+                now = time.monotonic()
+                new_frame = self._take_frame()
+                # Redraw only when something changed; toasts need an occasional
+                # refresh to disappear on time.
+                if new_frame or events or self.dirty or (self.toasts and now - last_draw > 0.1):
+                    self._draw()
+                    last_draw = now
+                    self.dirty = False
+                clock.tick(250)
         finally:
             self.engine.release_all()
             if not self.phone_screen_on:
@@ -216,39 +234,74 @@ class App:
                 time.sleep(0.1)
             pygame.quit()
 
+    def _request_keyframe(self):
+        # Called from the decoder thread when it fell behind the stream.
+        self.session.send(control.reset_video())
+
+    def _check_lag(self):
+        drops = self.decoder.drop_count
+        if drops != getattr(self, "_drops_seen", 0):
+            self._drops_seen = drops
+            now = time.monotonic()
+            self._drop_times = [t for t in getattr(self, "_drop_times", []) if now - t < 30] + [now]
+            if len(self._drop_times) >= 3:
+                self._drop_times = []
+                self.toast("Компьютер не успевает за видео. Попробуйте: ./run.sh -m 1024 --max-fps 30", 8)
+
     def _on_device_gone(self):
         self.device_gone = True
         self.running = False
 
     # ----- drawing -------------------------------------------------------
 
-    def _draw(self):
-        frame = self.decoder.take_frame()
-        if frame:
-            native, size, data = frame
-            if native != self.frame_native:
-                old = self.frame_native
-                self.frame_native = native
-                rotated = (old[0] > old[1]) != (native[0] > native[1])
-                if rotated and not self.fullscreen:
-                    self._set_mode(self._fit_window_size(*native))
-                else:
-                    self._layout()
-            self.frame_surface = pygame.image.frombuffer(data, size, "RGB")
+    def _take_frame(self):
+        """Convert the newest decoded frame (if any) for display.
 
+        Only the frame that will be shown is converted; the conversion is done
+        at native size (cheap) and scaling is left to pygame (also cheap),
+        which is much faster than letting swscale do both at once.
+        """
+        frame = self.decoder.take_frame()
+        if frame is None:
+            return False
+        native = (frame.width, frame.height)
+        if native != self.frame_native:
+            old = self.frame_native
+            self.frame_native = native
+            rotated = (old[0] > old[1]) != (native[0] > native[1])
+            if rotated and not self.fullscreen:
+                self._set_mode(self._fit_window_size(*native))
+            else:
+                self._layout()
+        # Rows may be padded in memory (e.g. width 1080), pygame needs them packed:
+        # ascontiguousarray copies only in that case.
+        rgb = numpy.ascontiguousarray(frame.to_ndarray(format="rgb24"))
+        self.frame_surface = pygame.image.frombuffer(rgb, native, "RGB")
+        self._frame_buffer = rgb  # keep the pixels alive as long as the surface
+        self._scaled = None
+        return True
+
+    def _draw(self):
         self.screen.fill((0, 0, 0))
         if self.frame_surface:
-            surf = self.frame_surface
-            if surf.get_size() != self.view.size:
-                surf = pygame.transform.scale(surf, self.view.size)
-            self.screen.blit(surf, self.view.topleft)
+            if self._scaled is None:
+                surf = self.frame_surface
+                if surf.get_size() != self.view.size:
+                    surf = pygame.transform.scale(surf, self.view.size)
+                self._scaled = surf
+            self.screen.blit(self._scaled, self.view.topleft)
         else:
             self._text_center("Ожидание изображения с телефона…")
 
         if self.editor:
             self.editor.draw(self.screen)
-        elif self.keymap_on and self.show_hints:
-            self.draw_mappings(self.screen, alpha=110)
+        elif self.keymap_on and self.show_hints and self.profile:
+            key = (id(self.profile), repr(self.profile.mappings), self.screen.get_size())
+            if self._hints_cache is None or self._hints_cache[0] != key:
+                layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+                self.draw_mappings(layer, alpha=110)
+                self._hints_cache = (key, layer)
+            self.screen.blit(self._hints_cache[1], (0, 0))
 
         self._draw_status()
         if self.show_help:

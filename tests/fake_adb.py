@@ -91,10 +91,14 @@ def serve(with_audio):
         audio.sendall(struct.pack(">I", 0x00726177))
         threading.Thread(target=send_audio, args=(audio,), daemon=True).start()
 
+    t0 = time.monotonic()
+
     def send(pkts):
         for data, key in pkts:
+            # pts in microseconds from the capture clock, like the real server
+            pts = int((time.monotonic() - t0) * 1e6)
             flags = (1 << 62) if key else 0
-            video.sendall(struct.pack(">QI", flags, len(data)) + data)
+            video.sendall(struct.pack(">QI", flags | pts, len(data)) + data)
             time.sleep(1 / 60)
 
     try:

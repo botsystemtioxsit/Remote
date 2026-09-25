@@ -4,28 +4,38 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 import av
 
 from .session import read_packet
 
 
+# If the picture lags this far behind the phone, drop what is queued and ask
+# the phone for a fresh keyframe instead of letting the delay keep growing.
+MAX_LAG_US = 250_000
+
+
 class VideoDecoder(threading.Thread):
     """Reads H.264 packets from the socket and keeps only the newest frame.
 
-    Frames are converted to RGB and scaled to `target_size` here, in the
-    decoder thread, so the UI thread only has to blit them.
+    Every packet has to be decoded (frames depend on each other), but the
+    expensive RGB conversion is left to the UI, which only converts the frame
+    it actually shows. When the stream arrives faster than this machine can
+    decode it, stale packets are skipped until the next keyframe, so latency
+    stays bounded instead of accumulating.
     """
 
-    def __init__(self, sock, on_eof=None):
+    def __init__(self, sock, on_eof=None, request_keyframe=None):
         super().__init__(daemon=True, name="video")
         self.sock = sock
         self.on_eof = on_eof
-        self.target_size = None     # (w, h) set by the UI; None = native size
+        self.request_keyframe = request_keyframe
         self.frame_size = (0, 0)    # native video size, used for touch coordinates
         self._lock = threading.Lock()
-        self._latest = None         # (native_size, (w, h), rgb bytes)
+        self._latest = None         # newest decoded av.VideoFrame not yet shown
         self.frame_count = 0
+        self.drop_count = 0         # times the decoder fell behind and resynced
         self.error = None
 
     def take_frame(self):
@@ -40,13 +50,32 @@ class VideoDecoder(threading.Thread):
         except (AttributeError, ValueError, TypeError):
             pass
         config = b""
+        base = None          # smallest (arrival time - pts) seen: "no lag" reference
+        skipping = False     # waiting for a keyframe after falling behind
         try:
             while True:
-                pts, is_config, _key, payload = read_packet(self.sock)
+                pts, is_config, key, payload = read_packet(self.sock)
                 if is_config:
-                    # SPS/PPS: prepend them to the next frame packet
+                    # SPS/PPS: prepend them to the next frame packet. A new
+                    # config means a new encoder session: its pts restart.
                     config = payload
+                    base = None
                     continue
+
+                d = time.monotonic() * 1e6 - pts
+                if base is None or d < base:
+                    base = d
+                if skipping:
+                    if not key:
+                        continue
+                    skipping = False
+                elif d - base > MAX_LAG_US and not key:
+                    skipping = True
+                    self.drop_count += 1
+                    if self.request_keyframe:
+                        self.request_keyframe()
+                    continue
+
                 if config:
                     payload = config + payload
                     config = b""
@@ -57,24 +86,17 @@ class VideoDecoder(threading.Thread):
                 except av.error.FFmpegError as e:
                     print("phonecast: decode error: %s" % e, file=sys.stderr)
                     continue
-                for frame in frames:
-                    self._publish(frame)
+                if frames:
+                    frame = frames[-1]
+                    with self._lock:
+                        self.frame_size = (frame.width, frame.height)
+                        self._latest = frame
+                        self.frame_count += len(frames)
         except (EOFError, OSError) as e:
             self.error = e
         finally:
             if self.on_eof:
                 self.on_eof()
-
-    def _publish(self, frame):
-        native = (frame.width, frame.height)
-        target = self.target_size or native
-        tw, th = max(2, int(target[0])), max(2, int(target[1]))
-        rgb = frame.reformat(width=tw, height=th, format="rgb24",
-                             interpolation="BILINEAR").to_ndarray()
-        with self._lock:
-            self.frame_size = native
-            self._latest = (native, (tw, th), rgb.tobytes())
-            self.frame_count += 1
 
 
 def find_audio_player():
