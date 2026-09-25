@@ -1,0 +1,24 @@
+{
+  "name": "Standoff 2",
+  "packages": ["com.axlebolt.standoff2"],
+  "mappings": [
+    {"type": "joystick", "x": 0.13, "y": 0.72, "radius": 0.13,
+     "up": "w", "left": "a", "down": "s", "right": "d"},
+    {"type": "aim", "toggle": "`", "x": 0.62, "y": 0.42, "radius": 0.3, "sensitivity": 1.0,
+     "auto": true},
+    {"type": "tap", "key": "mouse_left", "x": 0.87, "y": 0.56},
+    {"type": "tap", "key": "mouse_right", "x": 0.94, "y": 0.4},
+    {"type": "tap", "key": "space", "x": 0.94, "y": 0.66},
+    {"type": "tap", "key": "lctrl", "x": 0.94, "y": 0.84},
+    {"type": "tap", "key": "c", "x": 0.94, "y": 0.84},
+    {"type": "tap", "key": "r", "x": 0.8, "y": 0.87},
+    {"type": "tap", "key": "g", "x": 0.72, "y": 0.87},
+    {"type": "tap", "key": "e", "x": 0.72, "y": 0.62},
+    {"type": "tap", "key": "1", "x": 0.43, "y": 0.92},
+    {"type": "tap", "key": "2", "x": 0.51, "y": 0.92},
+    {"type": "tap", "key": "3", "x": 0.59, "y": 0.92},
+    {"type": "tap", "key": "b", "x": 0.05, "y": 0.3},
+    {"type": "tap", "key": "tab", "x": 0.5, "y": 0.05},
+    {"type": "android", "key": "escape", "action": "back"}
+  ]
+}

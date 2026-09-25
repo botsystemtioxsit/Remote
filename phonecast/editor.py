@@ -14,6 +14,7 @@ EDITOR_HELP = [
     "РЕДАКТОР РАСКЛАДКИ  (F3 или Esc — сохранить и выйти)",
     "Клик по пустому месту → нажмите клавишу или кнопку мыши: кнопка-касание",
     "J — джойстик WASD под курсором     M — зона прицела (обзор мышью) под курсором",
+    "K под кнопкой атаки → клавиша/кнопка мыши: атака с прицелом в сторону курсора",
     "Перетаскивание — переместить     ПКМ / Delete — удалить элемент под курсором",
     "Колесо над джойстиком/прицелом — размер     [ ] — чувствительность прицела",
     "N — новый профиль для текущего приложения     P — привязать профиль к приложению",
@@ -30,6 +31,7 @@ class Editor:
         self.app = app
         self.profile = app.profile
         self.pending = None      # normalized point waiting for a key
+        self.pending_type = "tap"
         self.drag = None         # (mapping index, last normalized pos)
         self.dirty = False
         self.show_help = True
@@ -78,10 +80,16 @@ class Editor:
                                "джойстик" if m["type"] == "joystick" else "прицел"))
                 return
         self.profile.mappings = [m for m in self.profile.mappings
-                                 if not (m["type"] in ("tap", "swipe", "android") and m["key"] == key)]
+                                 if not (m["type"] in ("tap", "swipe", "android", "skill")
+                                         and m["key"] == key)]
         x, y = self.pending
-        self.profile.mappings.append({"type": "tap", "key": key, "x": x, "y": y})
-        self.app.toast("Кнопка %s назначена" % keys.pretty(key))
+        if self.pending_type == "skill":
+            self.profile.mappings.append({"type": "skill", "key": key, "x": x, "y": y,
+                                          "radius": 0.1, "origin": [0.5, 0.5], "range": 0.35})
+            self.app.toast("Атака с прицелом на %s назначена" % keys.pretty(key))
+        else:
+            self.profile.mappings.append({"type": "tap", "key": key, "x": x, "y": y})
+            self.app.toast("Кнопка %s назначена" % keys.pretty(key))
         self._changed()
 
     # ----- events --------------------------------------------------------
@@ -101,6 +109,7 @@ class Editor:
                 elif self.app.inside_view(ev.pos):
                     nx, ny = self.app.window_to_norm(ev.pos)
                     self.pending = (_r(nx), _r(ny))
+                    self.pending_type = "tap"
                     self.app.toast("Нажмите клавишу или кнопку мыши для этой точки (Esc — отмена)", 60)
             elif ev.button == 3 and idx is not None:
                 self._delete(idx)
@@ -125,8 +134,8 @@ class Editor:
             idx = self.hit(pygame.mouse.get_pos())
             if idx is not None:
                 m = self.profile.mappings[idx]
-                if m["type"] in ("joystick", "aim"):
-                    default = 0.12 if m["type"] == "joystick" else 0.3
+                if m["type"] in ("joystick", "aim", "skill"):
+                    default = {"joystick": 0.12, "aim": 0.3, "skill": 0.1}[m["type"]]
                     r = float(m.get("radius", default)) + 0.01 * ev.y
                     m["radius"] = _r(min(max(r, 0.03), 0.6))
                     self._changed()
@@ -166,6 +175,11 @@ class Editor:
                 else:
                     maps[i]["x"], maps[i]["y"] = pos
                 self._changed()
+        elif name == "k":
+            pos = self._norm_mouse()
+            if pos:
+                self.pending, self.pending_type = pos, "skill"
+                self.app.toast("Нажмите клавишу или кнопку мыши для атаки с прицелом (Esc — отмена)", 60)
         elif name == "m":
             pos = self._norm_mouse()
             if pos:

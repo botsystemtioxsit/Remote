@@ -16,9 +16,19 @@ Mapping types:
             half deflection while pressed.
 
   aim       {"type": "aim", "toggle": "`", "x": 0.65, "y": 0.45,
-             "radius": 0.3, "sensitivity": 1.0}
+             "radius": 0.3, "sensitivity": 1.0, "auto": true}
             Mouse look. The toggle key captures the mouse; mouse motion then
             drags a finger around (x, y), re-centering when it goes too far.
+            "auto": capture the mouse as soon as the key mapping is enabled.
+
+  skill     {"type": "skill", "key": "mouse_left", "x": 0.84, "y": 0.74,
+             "radius": 0.1, "origin": [0.5, 0.5], "range": 0.35}
+            Aimed ability (Brawl Stars attack/super, MOBA skills): while the
+            key is held, a finger is dragged from (x, y) towards the mouse
+            cursor as seen from "origin" (where the character is on screen);
+            releasing the key fires. With the cursor on the character it is a
+            plain tap (auto-aim). A cursor "range" away from the origin gives
+            the full "radius" deflection.
 
   swipe     {"type": "swipe", "key": "e", "from": [0.5, 0.8], "to": [0.5, 0.3],
              "duration": 150}
@@ -42,6 +52,7 @@ from . import control
 from .keys import ANDROID_ACTIONS
 
 AIM_POINTER_ID = 100
+SKILL_DEADZONE = 0.03
 JOYSTICK_POINTER_BASE = 200
 MAPPING_POINTER_BASE = 300
 
@@ -103,6 +114,7 @@ def validate_mapping(m):
         "joystick": ("x", "y", "up", "left", "down", "right"),
         "aim": ("toggle", "x", "y"),
         "swipe": ("key", "from", "to"),
+        "skill": ("key", "x", "y"),
         "android": ("key", "action"),
     }
     if t not in required:
@@ -155,6 +167,8 @@ class Engine:
         self._held = {}        # key name -> (pointer id, x, y) of the finger held by that key
         self._joy_state = {}   # joystick index -> dict
         self._swipes = []      # active swipe animations
+        self._skills = {}      # key name -> [pointer id, mapping, current finger pos]
+        self.mouse_pos = (0.5, 0.5)  # cursor position, normalized to the frame
         self.aim = None        # aim mapping of the profile, if any
         self.aim_active = False
         self._aim_pos = None   # current finger position while aiming, None if up
@@ -190,6 +204,10 @@ class Engine:
     def handles(self, key):
         return key in self._by_key
 
+    def mapping_type(self, key):
+        entries = self._by_key.get(key)
+        return entries[0][1]["type"] if entries else None
+
     # ----- events --------------------------------------------------------
 
     def key_down(self, key):
@@ -217,6 +235,12 @@ class Engine:
                 self._start_swipe(i, m)
             elif t == "android":
                 self._keycode(ANDROID_ACTIONS[m["action"]])
+            elif t == "skill":
+                if key not in self._skills:
+                    pid = MAPPING_POINTER_BASE + i
+                    self._skills[key] = [pid, m, (m["x"], m["y"])]
+                    self._touch(control.ACTION_DOWN, pid, m["x"], m["y"])
+                    self._move_skill(key)
         return True
 
     def key_up(self, key):
@@ -236,7 +260,34 @@ class Engine:
                 else:
                     st["pressed"].discard(role)
                 self._update_joystick(i, m)
+            elif t == "skill" and key in self._skills:
+                self._move_skill(key)
+                pid, _m, pos = self._skills.pop(key)
+                self._touch(control.ACTION_UP, pid, *pos)
         return True
+
+    def mouse_position(self, nx, ny):
+        """Absolute cursor position (normalized) while the mouse is free."""
+        self.mouse_pos = (nx, ny)
+        for key in self._skills:
+            self._move_skill(key)
+
+    def _move_skill(self, key):
+        st = self._skills[key]
+        pid, m, pos = st
+        aspect = self._aspect() or 1.0
+        ox, oy = m.get("origin", (0.5, 0.5))
+        dx = (self.mouse_pos[0] - ox) * aspect   # in frame-height units
+        dy = self.mouse_pos[1] - oy
+        dist = math.hypot(dx, dy)
+        if dist < SKILL_DEADZONE:
+            target = (m["x"], m["y"])
+        else:
+            k = min(1.0, dist / float(m.get("range", 0.35))) * float(m.get("radius", 0.1))
+            target = (_clamp01(m["x"] + dx / dist * k / aspect), _clamp01(m["y"] + dy / dist * k))
+        if target != pos:
+            st[2] = target
+            self._touch(control.ACTION_MOVE, pid, *target)
 
     def mouse_motion(self, dx, dy):
         """Relative mouse motion (in window pixels) while aiming."""
@@ -302,6 +353,9 @@ class Engine:
                 st["down"] = None
         for s in self._swipes:
             self._touch(control.ACTION_UP, s["pid"], *s["to"])
+        for pid, _m, pos in self._skills.values():
+            self._touch(control.ACTION_UP, pid, *pos)
+        self._skills = {}
         self._held.clear()
         self._swipes = []
         self.set_aim_active(False)

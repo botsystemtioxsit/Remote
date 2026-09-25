@@ -378,6 +378,11 @@ class App:
                 pygame.draw.circle(overlay, col[:3] + (alpha // 2,), c, max(r, 10), 2)
                 pygame.draw.line(overlay, col, (c[0] - 14, c[1]), (c[0] + 14, c[1]), 3)
                 pygame.draw.line(overlay, col, (c[0], c[1] - 14), (c[0], c[1] + 14), 3)
+            elif t == "skill":
+                c = self.norm_to_window(m["x"], m["y"])
+                r = int(float(m.get("radius", 0.1)) * fh)
+                pygame.draw.circle(overlay, col, c, max(r, 12), 3)
+                pygame.draw.circle(overlay, col[:3] + (alpha // 3,), c, max(r, 12))
             elif t == "swipe":
                 a = self.norm_to_window(*m["from"])
                 b = self.norm_to_window(*m["to"])
@@ -385,11 +390,19 @@ class App:
                 pygame.draw.circle(overlay, col, b, 7)
                 pygame.draw.circle(overlay, col, a, 16, 3)
         surface.blit(overlay, (0, 0))
+        # Keys bound to the same point (e.g. Brawl Stars: LMB aimed attack and
+        # Space quick attack) share one label instead of hiding each other.
+        point_labels = {}
+        for m in self.profile.mappings:
+            if m["type"] in ("tap", "skill", "swipe"):
+                pos = self.norm_to_window(*(m["from"] if m["type"] == "swipe" else (m["x"], m["y"])))
+                text = keys.pretty(m["key"]) + (" →" if m["type"] == "skill" else "")
+                point_labels.setdefault(pos, []).append(text)
+        for pos, texts in point_labels.items():
+            self.label(surface, " / ".join(texts), pos)
         for i, m in enumerate(self.profile.mappings):
             t = m["type"]
-            if t == "tap":
-                self.label(surface, keys.pretty(m["key"]), self.norm_to_window(m["x"], m["y"]))
-            elif t == "joystick":
+            if t == "joystick":
                 cx, cy = self.norm_to_window(m["x"], m["y"])
                 r = int(float(m.get("radius", 0.12)) * fh)
                 for d, (ox, oy) in (("up", (0, -1)), ("down", (0, 1)), ("left", (-1, 0)), ("right", (1, 0))):
@@ -397,8 +410,6 @@ class App:
             elif t == "aim":
                 cx, cy = self.norm_to_window(m["x"], m["y"])
                 self.label(surface, "прицел: " + keys.pretty(m["toggle"]), (cx, cy + 30))
-            elif t == "swipe":
-                self.label(surface, keys.pretty(m["key"]), self.norm_to_window(*m["from"]))
 
     def _draw_status(self):
         parts = []
@@ -488,7 +499,9 @@ class App:
         elif ev.type == pygame.MOUSEMOTION:
             if self.engine.aim_active:
                 self.engine.mouse_motion(*ev.rel)
-            elif self.mouse_down:
+            elif self.keymap_on and self.view.w:
+                self.engine.mouse_position(*self.window_to_norm(ev.pos))
+            if not self.engine.aim_active and self.mouse_down:
                 self._send_mouse_touch(control.ACTION_MOVE, ev.pos)
         elif ev.type == pygame.MOUSEWHEEL:
             if not self.engine.aim_active:
@@ -570,8 +583,13 @@ class App:
         name = keys.MOUSE_BUTTON_NAMES.get(ev.button)
         if name is None:
             return
-        if self.keymap_on and (self.engine.aim_active or name != "mouse_left") \
-                and self.engine.handles(name):
+        # With a free cursor the left button stays a normal touch (menus),
+        # unless the profile uses it for an aimed skill (Brawl Stars attack).
+        if self.keymap_on and self.engine.handles(name) and (
+                self.engine.aim_active or name != "mouse_left"
+                or self.engine.mapping_type(name) == "skill"):
+            if down and not self.engine.aim_active and self.view.w:
+                self.engine.mouse_position(*self.window_to_norm(ev.pos))
             if down:
                 self.engine.key_down(name)
             else:
@@ -708,6 +726,8 @@ class App:
         self.auto_keymap = auto and on
         if on:
             pygame.key.stop_text_input()
+            if self.engine.aim and self.engine.aim.get("auto"):
+                self.engine.set_aim_active(True)  # shooters: mouse look right away
             self.toast("Игровой режим: %s" % self.profile.name)
         else:
             pygame.key.start_text_input()

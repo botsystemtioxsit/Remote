@@ -14,15 +14,31 @@ def bundled_profiles_dir():
 
 
 def seed_profiles(directory):
-    """On first run, copy the example profiles shipped with the program."""
-    if os.path.isdir(directory):
-        return
-    os.makedirs(directory)
+    """Copy the profiles shipped with the program that the user has not got yet.
+
+    Each bundled profile is copied once (remembered in .bundled), so profiles
+    added by an update appear, while ones the user deleted stay deleted and
+    ones the user edited are never overwritten.
+    """
+    os.makedirs(directory, exist_ok=True)
     src = bundled_profiles_dir()
-    if os.path.isdir(src):
-        for fname in os.listdir(src):
-            if fname.endswith(".json"):
-                shutil.copy(os.path.join(src, fname), os.path.join(directory, fname))
+    if not os.path.isdir(src):
+        return
+    record = os.path.join(directory, ".bundled")
+    try:
+        with open(record, encoding="utf-8") as f:
+            done = set(f.read().split())
+    except FileNotFoundError:
+        # Earlier versions copied the examples without a record.
+        done = {f for f in os.listdir(directory) if f.endswith(".json")}
+    for fname in sorted(os.listdir(src)):
+        if fname.endswith(".json") and fname not in done:
+            dest = os.path.join(directory, fname)
+            if not os.path.exists(dest):
+                shutil.copy(os.path.join(src, fname), dest)
+            done.add(fname)
+    with open(record, "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(done)) + "\n")
 
 
 def main(argv=None):
