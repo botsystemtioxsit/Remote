@@ -1,0 +1,29 @@
+name: Release archive
+
+# Кладёт архив программы в релиз «latest» под постоянным именем:
+# https://github.com/botsystemtioxsit/Remote/releases/download/latest/phonecast-linux.tar.gz
+# Эту ссылку использует каталог Ghost Shell Launcher.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Собрать архив
+        run: |
+          mkdir -p /tmp/pc && cp -r . /tmp/pc/phonecast
+          rm -rf /tmp/pc/phonecast/.git /tmp/pc/phonecast/.github /tmp/pc/phonecast/tests
+          tar -czf phonecast-linux.tar.gz -C /tmp/pc phonecast
+      - name: Выложить в релиз latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "Phonecast для Linux — последняя сборка" --notes "Архив программы. Обновляется автоматически. Установка: распаковать и запустить install.sh."
+          gh release upload latest phonecast-linux.tar.gz --clobber
